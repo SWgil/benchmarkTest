@@ -1,0 +1,7 @@
+# AgentDojo 전용 파생 태그. 서버에서:
+#   ollama create qwen3.8-27b-agentdojo -f configs/Modelfile.qwen3.8-27b
+# 그리고 OLLAMA_MODEL=qwen3.8-27b-agentdojo 로 설정.
+# 러너가 temperature/seed를 요청마다 보내므로 num_ctx 고정이 핵심이다.
+FROM qwen3.8:27b
+PARAMETER num_ctx 32768
+PARAMETER temperature 0

@@ -57,59 +57,82 @@ Ollama 서버: `http://10.25.36.222:9090`
 
 ## 2. 환경 구축 (Phase 1)
 
-### 2.1 저장소 구조 (제안)
+### 2.1 저장소 구조 (구현됨)
 
 ```
 benchmarkTest/
-├── PLAN.md                  # 이 문서
-├── README.md                # 실행 요약
-├── pyproject.toml           # uv/pip 의존성 (agentdojo==0.1.35 고정)
-├── .env.example             # OPENAI_COMPATIBLE_BASE_URL 등 템플릿
+├── PLAN.md                    # 이 문서
+├── README.md                  # 실행 요약
+├── pyproject.toml             # agentdojo==0.1.35 고정, 엔트리포인트 agentdojo-ollama / agentdojo-summarize
+├── .env.example               # OLLAMA_BASE_URL / OLLAMA_MODEL 템플릿
+├── agentdojo_ollama/
+│   ├── llm.py                 # OllamaLLM: OpenAILLM 상속, temperature/seed/reasoning_effort 명시 전송, <think> 제거
+│   ├── run.py                 # 원본 benchmark CLI와 동일 옵션의 러너
+│   └── summarize.py           # runs/ 집계 → Markdown/CSV
 ├── configs/
-│   └── qwen3.8-27b.env      # 모델별 설정
+│   ├── qwen3.8-27b.env        # 모델별 설정
+│   └── Modelfile.qwen3.8-27b  # num_ctx 32768 파생 태그용
 ├── scripts/
-│   ├── check_ollama.sh      # Phase 0 점검 자동화
-│   ├── run_smoke.sh         # 단일 태스크 스모크 테스트
-│   ├── run_utility.sh       # 공격 없음 전체 실행
-│   ├── run_attack.sh        # important_instructions 공격 실행
-│   ├── run_defense.sh       # 방어 기법별 실행
-│   └── summarize.py         # runs/ 결과 집계 → CSV/Markdown
-├── runs/                    # AgentDojo 로그 출력 (gitignore)
-└── results/                 # 집계 결과 (커밋 대상)
+│   ├── common.sh              # configs/ + .env 로드
+│   ├── check_ollama.sh        # Phase 0 점검 자동화
+│   ├── run_smoke.sh           # Phase 2
+│   ├── run_utility.sh         # E1
+│   ├── run_attack.sh          # E2/E3
+│   ├── run_defense.sh         # E4
+│   ├── summarize.sh           # Phase 4
+│   └── run_inspect.sh         # Phase 5 (AgentDojo-Inspect)
+├── runs/                      # AgentDojo 로그 (gitignore)
+└── results/                   # 집계 결과 (커밋 대상)
 ```
 
 ### 2.2 설치
 
 ```bash
-# Python 3.10+ 필요
 uv venv && source .venv/bin/activate
-uv pip install "agentdojo==0.1.35"
-# 방어 기법 transformers_pi_detector 사용 시
-uv pip install "agentdojo[transformers]"
+uv pip install -e .                  # agentdojo 0.1.35 + 러너
+uv pip install -e ".[transformers]"  # transformers_pi_detector 방어 사용 시
+uv pip install -e ".[inspect]"       # Phase 5
+cp .env.example .env
 ```
 
-### 2.3 모델 연결 설정
+### 2.3 모델 연결 방식 (중요한 변경)
 
-AgentDojo 0.1.35에는 `openai-compatible` 프로바이더가 있어 Ollama의 OpenAI 호환 API에 바로 연결할 수 있다. `.env` 파일:
+계획 초안에서는 AgentDojo의 `openai-compatible` 프로바이더를 쓰려 했으나, **PyPI 배포판 0.1.35에는 이 프로바이더가 없다** (GitHub main에만 존재). 또한 원본 `OpenAILLM`은 `temperature or NOT_GIVEN` 구현 때문에 temperature 0을 실제로 보내지 않는다. 그래서 다음을 자체 구현했다.
+
+- `OllamaLLM(OpenAILLM)`: base_url을 Ollama 서버로 설정한 클라이언트로 `/v1/chat/completions` 호출. 매 요청에 `temperature=0`, `seed=0`, `reasoning_effort="none"`(Ollama가 think=false로 매핑)을 명시 전송하고, 응답의 `<think>` 블록을 제거한다. `OpenAILLM`을 상속하므로 `tool_filter` 방어도 그대로 동작한다.
+- `agentdojo_ollama.run`: `PipelineConfig(llm=OllamaLLM(...))`로 파이프라인을 만들고 원본의 `benchmark_suite_with(out)_injections`를 호출. 공격 문구가 모델을 지칭할 수 있도록 `MODEL_NAMES`에 모델 태그 → `Qwen`을 등록한다.
+- 시스템 메시지 끝에 Qwen3 soft switch `/no_think`를 붙인다 (`--no-no-think-tag`로 끌 수 있음).
+
+`.env`:
 
 ```dotenv
-OPENAI_COMPATIBLE_BASE_URL=http://10.25.36.222:9090/v1
-OPENAI_COMPATIBLE_API_KEY=ollama        # Ollama는 키를 검사하지 않지만 빈 값이면 AgentDojo가 에러를 냄
+OLLAMA_BASE_URL=http://10.25.36.222:9090/v1
+OLLAMA_API_KEY=ollama
+OLLAMA_MODEL=qwen3.8:27b
+MODEL_PROSE_NAME=Qwen
 ```
 
-실행 시 `--model openai-compatible --model-id qwen3.8:27b`를 준다. `--model-id`는 필수다.
+실행: `agentdojo-ollama --model qwen3.8:27b --base-url http://10.25.36.222:9090/v1 ...` 또는 `scripts/*.sh`.
 
----
+### 2.4 검증 상태
+
+이 저장소를 만든 원격 컨테이너에서는 실제 서버에 접근할 수 없어, Ollama의 OpenAI 호환 API를 흉내내는 모의 서버(첫 턴 tool call, 이후 `<think>` 포함 텍스트 응답)로 다음을 확인했다.
+
+- 공격 없음 / `important_instructions` 공격 / `tool_filter` 방어 실행이 끝까지 돌고 원본과 같은 경로에 로그가 생성됨
+- 요청에 `temperature=0.0`, `seed=0`, `reasoning_effort="none"`이 전송되고 시스템 메시지에 `/no_think`가 붙음
+- 응답의 `<think>` 블록이 로그에서 제거됨, 인젝션 문구에 모델 이름 `Qwen`이 들어감
+- `--max-workers 2`로 suite 병렬 실행, `agentdojo-summarize` 집계 표 생성
+
+실제 모델 동작(tool call 파싱 품질, num_ctx, thinking off 적용 여부)은 사내망에서 `scripts/check_ollama.sh`와 `scripts/run_smoke.sh`로 확인해야 한다.
 
 ## 3. 스모크 테스트 (Phase 2)
 
 목적: 파이프라인이 끝까지 도는지, tool call이 정상 파싱되는지 확인.
 
 ```bash
-python -m agentdojo.scripts.benchmark \
-  --model openai-compatible --model-id qwen3.8:27b \
-  -s workspace -ut user_task_0 -ut user_task_1 \
-  --logdir ./runs
+scripts/run_smoke.sh
+# 또는
+agentdojo-ollama --model qwen3.8:27b -s workspace -ut user_task_0 -ut user_task_1 --logdir ./runs
 ```
 
 확인 사항:
@@ -121,9 +144,7 @@ python -m agentdojo.scripts.benchmark \
 공격 포함 스모크 테스트:
 
 ```bash
-python -m agentdojo.scripts.benchmark \
-  --model openai-compatible --model-id qwen3.8:27b \
-  -s workspace -ut user_task_0 -it injection_task_0 \
+agentdojo-ollama --model qwen3.8:27b -s workspace -ut user_task_0 -it injection_task_0 \
   --attack important_instructions --logdir ./runs
 ```
 
@@ -143,15 +164,10 @@ AgentDojo 논문의 표준 리포팅 항목을 그대로 따른다. 벤치마크
 실행 예:
 
 ```bash
-# E1
-python -m agentdojo.scripts.benchmark --model openai-compatible --model-id qwen3.8:27b \
-  --max-workers 4 --logdir ./runs
-# E2
-python -m agentdojo.scripts.benchmark --model openai-compatible --model-id qwen3.8:27b \
-  --attack important_instructions --max-workers 4 --logdir ./runs
-# E4 (예: tool_filter)
-python -m agentdojo.scripts.benchmark --model openai-compatible --model-id qwen3.8:27b \
-  --attack important_instructions --defense tool_filter --max-workers 4 --logdir ./runs
+MAX_WORKERS=4 scripts/run_utility.sh                      # E1
+MAX_WORKERS=4 scripts/run_attack.sh                       # E2
+ATTACK=tool_knowledge MAX_WORKERS=4 scripts/run_attack.sh # E3
+DEFENSES="tool_filter repeat_user_prompt spotlighting_with_delimiting" scripts/run_defense.sh  # E4
 ```
 
 `--max-workers`는 suite 단위 병렬이므로 최대 4가 의미 있다. 이미 완료된 태스크는 건너뛰므로 중단 후 재실행이 가능하고, 다시 돌리려면 `-f`를 준다.
@@ -170,32 +186,33 @@ python -m agentdojo.scripts.benchmark --model openai-compatible --model-id qwen3
   ssh -N -L 8000:10.25.36.222:9090 <점프호스트>   # 또는 socat
   LOCAL_LLM_PORT=8000 python -m agentdojo.scripts.benchmark --model local --model-id qwen3.8:27b ...
   ```
+  이 경로는 `runs/local/...`에 로그를 남기므로 집계 시 pipeline 이름이 달라진다.
 - **(C) 컨텍스트 초과**: 응답이 잘리거나 tool 스키마를 무시하면 `num_ctx`를 늘린다(§1).
-- **(D) thinking 토큰이 content에 섞임**: `<think>` 블록이 응답 본문에 들어오면 utility 판정에 영향을 줄 수 있다. thinking off로 고정하거나, 커스텀 파이프라인 요소에서 제거한다.
-- **(E) 재현성**: temperature 0, 벤치마크 버전, agentdojo 버전, Ollama 버전, 모델 digest를 `results/`에 함께 기록한다.
+- **(D) thinking 토큰이 content에 섞임**: 러너가 `reasoning_effort=none` + `/no_think`로 끄고, 그래도 섞이면 `<think>` 블록을 제거한다. 구형 Ollama는 `reasoning_effort`를 무시하므로 `check_ollama.sh` 4번 항목에서 실제로 꺼지는지 확인한다.
+- **(E) 재현성**: `scripts/summarize.sh`가 Ollama 버전, 모델 digest, agentdojo 버전, 추가 인자를 결과 파일에 기록한다. 벤치마크 버전은 `v1.2.2` 고정.
 
 ---
 
 ## 6. 결과 정리 (Phase 4)
 
-- `scripts/summarize.py`가 `runs/` 아래 JSON을 읽어 suite별·전체 Utility / ASR / Utility-under-attack 표를 `results/<model>_<date>.md`와 CSV로 생성한다.
+- `agentdojo-summarize`(`scripts/summarize.sh`)가 `runs/` 아래 JSON을 읽어 pipeline×attack×suite별·전체 Utility / Targeted ASR / 인젝션 태스크 해결 수 / 오류 수 / 평균 소요 시간을 `results/<model>_<date>.md`와 CSV로 생성한다.
 - 공식 리더보드(agentdojo.spylab.ai/results)의 GPT-4o, Claude 등 수치와 나란히 비교표를 만든다.
 
 ---
 
 ## 7. 계열 벤치마크 확장 (Phase 5)
 
-1. **AgentDojo-Inspect**: `inspect_ai` + `inspect_evals` 설치 후 `inspect eval inspect_evals/agentdojo --model openai-api/ollama/qwen3.8:27b` 형태로 실행. Inspect는 `OPENAI_API_BASE_URL` 방식의 OpenAI 호환 모델을 지원하므로 같은 Ollama 서버를 재사용한다.
+1. **AgentDojo-Inspect**: `pip install -e ".[inspect]"` 후 `scripts/run_inspect.sh` 실행 (`inspect eval inspect_evals/agentdojo --model openai-api/ollama/<tag>`). Inspect의 `openai-api` 프로바이더는 `OPENAI_BASE_URL`로 임의의 OpenAI 호환 서버를 가리킬 수 있어 같은 Ollama 서버를 재사용한다. `workspace_plus`의 sandbox 태스크는 Docker가 필요하므로 기본은 `with_sandbox_tasks=no`.
 2. 원본 AgentDojo와 Inspect판의 태스크 차이(버그 수정, 추가 인젝션 태스크)를 결과에 분리 기록한다.
 3. 여유가 되면 InjecAgent / ASB로 동일 모델을 평가해 벤치마크 간 ASR 경향을 비교한다.
 
 ---
 
-## 8. 진행 순서 요약
+## 8. 진행 상태
 
-1. Phase 0 점검 스크립트 작성 및 사내망에서 실행 → 모델 태그·tool calling·num_ctx 확정
-2. Phase 1 저장소 스캐폴딩(pyproject, .env.example, scripts/) 커밋
-3. Phase 2 스모크 테스트 통과
-4. Phase 3 E1 → E2 → E4 순으로 실행, 각 단계 결과를 `results/`에 커밋
-5. Phase 4 집계 스크립트와 비교표
-6. Phase 5 AgentDojo-Inspect로 확장
+- [x] Phase 1 저장소 스캐폴딩 + 러너/집계기 구현, 모의 서버로 검증
+- [ ] Phase 0 사내망에서 `scripts/check_ollama.sh` 실행 → 모델 태그·tool calling·num_ctx 확정
+- [ ] Phase 2 `scripts/run_smoke.sh` 통과, 태스크당 소요 시간 기록
+- [ ] Phase 3 E1 → E2 → E3 → E4 순으로 실행, 각 단계 결과를 `results/`에 커밋
+- [ ] Phase 4 `scripts/summarize.sh`로 비교표, 공식 리더보드와 대조
+- [ ] Phase 5 `scripts/run_inspect.sh`로 AgentDojo-Inspect 확장

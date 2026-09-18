@@ -1,0 +1,28 @@
+[project]
+name = "agentdojo-ollama"
+version = "0.1.0"
+description = "Run AgentDojo-family benchmarks against a local Ollama model"
+requires-python = ">=3.10"
+dependencies = [
+    "agentdojo==0.1.35",
+    "openai>=1.59.7",
+    "click>=8.1.7",
+    "python-dotenv>=1.0.1",
+]
+
+[project.optional-dependencies]
+# transformers_pi_detector 방어 기법 사용 시
+transformers = ["agentdojo[transformers]==0.1.35"]
+# Phase 5: AgentDojo-Inspect (UK AISI 포크)
+inspect = ["inspect-ai", "inspect-evals[agentdojo]"]
+
+[project.scripts]
+agentdojo-ollama = "agentdojo_ollama.run:cli"
+agentdojo-summarize = "agentdojo_ollama.summarize:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["agentdojo_ollama"]
