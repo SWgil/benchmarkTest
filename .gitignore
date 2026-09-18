@@ -9,3 +9,6 @@ dist/
 runs/
 logs/
 !results/.gitkeep
+third_party/
+.venv-*/
+nltk_data/

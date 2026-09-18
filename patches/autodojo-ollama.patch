@@ -1,0 +1,141 @@
+diff --git a/agentdojo/src/agentdojo/agent_pipeline/agent_pipeline.py b/agentdojo/src/agentdojo/agent_pipeline/agent_pipeline.py
+index 927a956..953a84e 100644
+--- a/agentdojo/src/agentdojo/agent_pipeline/agent_pipeline.py
++++ b/agentdojo/src/agentdojo/agent_pipeline/agent_pipeline.py
+@@ -123,8 +123,27 @@ def load_system_message(system_message_name: str | None) -> str:
+     return system_messages.get(system_message_name, system_messages["default"])
+ 
+ 
+-def _get_local_model_id(port) -> str:
+-    url = f"http://localhost:{port}/v1/models"
++def _local_llm_base_url(port_env: str = "LOCAL_LLM_PORT", default_port: int = 8000) -> str:
++    """Base URL of the local OpenAI-compatible target server.
++
++    ``LOCAL_LLM_BASE_URL`` (e.g. ``http://10.251.36.222:9090/v1`` for a remote Ollama)
++    takes precedence; otherwise ``http://localhost:$LOCAL_LLM_PORT/v1``.
++    """
++    explicit = os.getenv("LOCAL_LLM_BASE_URL")
++    if explicit:
++        return explicit.rstrip("/")
++    port = os.getenv(port_env, default_port)
++    return f"http://localhost:{port}/v1"
++
++
++def _get_local_model_id(port, base_url: str | None = None) -> str:
++    """Served model id. ``LOCAL_LLM_MODEL_ID`` wins (required when the server hosts
++    several models, e.g. Ollama); otherwise the first entry of ``/v1/models``."""
++    explicit = os.getenv("LOCAL_LLM_MODEL_ID")
++    if explicit:
++        logging.info(f"Using model from LOCAL_LLM_MODEL_ID: {explicit}")
++        return explicit
++    url = f"{base_url.rstrip('/') if base_url else f'http://localhost:{port}/v1'}/models"
+     response = requests.get(url)
+     response.raise_for_status()
+     data = response.json()
+@@ -135,13 +154,19 @@ def _get_local_model_id(port) -> str:
+ 
+ def get_llm(model: str) -> BasePipelineElement:
+     if model.lower() == "vllm_parsed":
+-        # Local vLLM server via OpenAI-compatible API
++        # Local vLLM/Ollama server via OpenAI-compatible API.
++        #   LOCAL_LLM_BASE_URL         full base URL (default http://localhost:$LOCAL_LLM_PORT/v1)
++        #   LOCAL_LLM_MODEL_ID         served model id (default: first of /v1/models)
++        #   LOCAL_LLM_API_KEY          api key (default "EMPTY"; Ollama ignores it)
++        #   LOCAL_LLM_REASONING_EFFORT e.g. "none" -> Ollama maps it to think=false
+         port = os.getenv("LOCAL_LLM_PORT", 8000)
++        base_url = _local_llm_base_url()
+         client = openai.OpenAI(
+-            api_key="EMPTY",
+-            base_url=f"http://localhost:{port}/v1",
++            api_key=os.getenv("LOCAL_LLM_API_KEY", "EMPTY"),
++            base_url=base_url,
+         )
+-        llm = OpenAILLM(client, _get_local_model_id(port))
++        reasoning_effort = os.getenv("LOCAL_LLM_REASONING_EFFORT") or None
++        llm = OpenAILLM(client, _get_local_model_id(port, base_url), reasoning_effort=reasoning_effort)  # type: ignore[arg-type]
+     elif model.startswith("gemini"):
+         # Native Google Gemini API (AI Studio key), NOT OpenRouter.
+         from google import genai
+diff --git a/agentdojo/src/agentdojo/agent_pipeline/drift_defense/drift_client.py b/agentdojo/src/agentdojo/agent_pipeline/drift_defense/drift_client.py
+index 7352228..3771f05 100644
+--- a/agentdojo/src/agentdojo/agent_pipeline/drift_defense/drift_client.py
++++ b/agentdojo/src/agentdojo/agent_pipeline/drift_defense/drift_client.py
+@@ -294,7 +294,10 @@ def build_drift_client(model: str, model_id: str | None = None, port_env: str =
+     logger = logger or _DEFAULT_LOGGER
+     if model.lower() == "vllm_parsed":
+         port = os.getenv(port_env, default_port)
+-        api_base = f"http://localhost:{port}/v1"
+-        resolved = model_id or _resolve_local_model_id(api_base)
+-        return OpenAIModel(model=resolved, api_key="EMPTY", api_base=api_base, logger=logger)
++        # LOCAL_LLM_BASE_URL / DRIFT_DEFENSE_LLM_BASE_URL override the localhost:port default
++        # (remote Ollama). LOCAL_LLM_MODEL_ID / DRIFT_DEFENSE_LLM_MODEL_ID name the served model.
++        base_env = port_env.replace("_PORT", "_BASE_URL")
++        api_base = (os.getenv(base_env) or f"http://localhost:{port}/v1").rstrip("/")
++        resolved = model_id or os.getenv(port_env.replace("_PORT", "_MODEL_ID")) or _resolve_local_model_id(api_base)
++        return OpenAIModel(model=resolved, api_key=os.getenv("LOCAL_LLM_API_KEY", "EMPTY"), api_base=api_base, logger=logger)
+     return OpenRouterModel(model=model_id or model, logger=logger)
+diff --git a/agentdojo/src/agentdojo/agent_pipeline/llms/openai_llm.py b/agentdojo/src/agentdojo/agent_pipeline/llms/openai_llm.py
+index e53bd60..183f7a7 100644
+--- a/agentdojo/src/agentdojo/agent_pipeline/llms/openai_llm.py
++++ b/agentdojo/src/agentdojo/agent_pipeline/llms/openai_llm.py
+@@ -285,7 +285,9 @@ def chat_completion_request(
+     if _is_anthropic_route(model):
+         messages = _add_anthropic_cache_control(messages)
+     extra_body = cost_tracker.merge_usage_into(_openrouter_extra_body(model), client)
+-    if "qwen" in model.lower():
++    # OpenRouter's Qwen route rejects reasoning_effort; a local Ollama/vLLM server
++    # needs it (Ollama maps "none" to think=false), so only drop it on OpenRouter.
++    if "qwen" in model.lower() and "openrouter.ai" in str(getattr(client, "base_url", "")):
+         completion = client.chat.completions.create(
+             model=model,
+             messages=messages,
+diff --git a/agentdojo/variant_generation/llm_utils.py b/agentdojo/variant_generation/llm_utils.py
+index 7e88aed..a8d0c31 100644
+--- a/agentdojo/variant_generation/llm_utils.py
++++ b/agentdojo/variant_generation/llm_utils.py
+@@ -49,6 +49,16 @@ PROVIDERS = {
+         "api_key_env": None,
+         "client_type": "openai",
+     },
++    # Ollama (or any OpenAI-compatible server) as the optimizer/analyzer LLM.
++    # Base URL comes from OLLAMA_BASE_URL (e.g. http://10.251.36.222:9090/v1),
++    # resolved at call time so .env is honoured. OLLAMA_REASONING_EFFORT ("none",
++    # "low", ...) is forwarded as reasoning_effort; Ollama maps "none" to think=false.
++    "ollama": {
++        "base_url": None,
++        "base_url_env": "OLLAMA_BASE_URL",
++        "api_key_env": "OLLAMA_API_KEY",
++        "client_type": "openai",
++    },
+     "local": {
+         "base_url": None,
+         "api_key_env": None,
+@@ -75,8 +85,13 @@ def get_openai_client(provider: str = "openrouter") -> OpenAI:
+         if config["api_key_env"]:
+             logger.warning(f"{config['api_key_env']} not found in environment. API calls may fail.")
+     
++    base_url = config["base_url"]
++    if config.get("base_url_env"):
++        base_url = os.environ.get(config["base_url_env"]) or base_url
++        if not base_url:
++            raise ValueError(f"{config['base_url_env']} must be set for provider '{provider}'")
+     return OpenAI(
+-        base_url=config["base_url"],
++        base_url=base_url,
+         api_key=api_key,
+     )
+ 
+@@ -125,9 +140,13 @@ def _generate_openai(
+             extra_body = _gemini_or_eb_kwargs(model_name).get("extra_body")
+             if cost_tracker:
+                 extra_body = cost_tracker.merge_usage_into(extra_body, client)
++            provider_kwargs = {}
++            if provider == "ollama" and os.environ.get("OLLAMA_REASONING_EFFORT"):
++                provider_kwargs["reasoning_effort"] = os.environ["OLLAMA_REASONING_EFFORT"]
+             response = client.chat.completions.create(
+                 model=model_name,
+                 **({"extra_body": extra_body} if extra_body else {}),
++                **provider_kwargs,
+                 messages=messages,
+                 temperature=temperature,
+                 max_tokens=max_tokens,

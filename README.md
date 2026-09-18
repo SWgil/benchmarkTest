@@ -1,6 +1,14 @@
 # benchmarkTest — AgentDojo 계열 벤치마크 × Ollama(qwen3.8:27b)
 
-로컬 Ollama 서버(`10.251.36.222:9090`)의 모델로 [AgentDojo](https://github.com/ethz-spylab/agentdojo) 프롬프트 인젝션 벤치마크를 실행하고 집계하는 환경입니다. 전체 계획은 [PLAN.md](PLAN.md)를 보세요.
+로컬 Ollama 서버(`10.251.36.222:9090`)의 모델로 [AgentDojo](https://github.com/ethz-spylab/agentdojo) 계열 프롬프트 인젝션 벤치마크를 실행하고 집계하는 환경입니다. 전체 계획은 [PLAN.md](PLAN.md)를 보세요.
+
+| BENCH | 벤치마크 | 내용 | 설치 |
+|---|---|---|---|
+| `agentdojo` | [AgentDojo](https://github.com/ethz-spylab/agentdojo) 0.1.35 / v1.2.2 | workspace, slack, travel, banking (97 tasks, 629 cases) | `pip install -e .` |
+| `agentdyn` | [AgentDyn](https://github.com/SaFo-Lab/AgentDyn) | + shopping, github, dailylife (60 open-ended tasks, 560 cases) | `scripts/setup_agentdyn.sh` |
+| `autodojo` | [AutoDojo](https://github.com/xhOwenMa/AutoDojo) | 적응형 공격: 커밋된 최적화 캐시 전이 평가 + 우리 모델 대상 직접 최적화 | `scripts/setup_autodojo.sh` |
+
+세 벤치마크는 모두 `agentdojo`라는 같은 패키지 이름의 포크라서 **venv를 따로** 씁니다(`.venv-agentdojo`, `.venv-agentdyn`, `.venv-autodojo`). `scripts/common.sh`가 `BENCH` 값에 따라 venv, 기본 suite, 로그 디렉터리(`runs/<BENCH>/`)를 고릅니다.
 
 ## 왜 자체 러너인가
 
@@ -13,11 +21,14 @@
 ## 설치
 
 ```bash
-uv venv && source .venv/bin/activate      # 또는 python3 -m venv .venv
-uv pip install -e .                       # agentdojo 0.1.35 + 러너
-# 선택
-uv pip install -e ".[transformers]"       # transformers_pi_detector 방어
-uv pip install -e ".[inspect]"            # Phase 5: AgentDojo-Inspect
+# 1) 원본 AgentDojo
+python3 -m venv .venv-agentdojo && .venv-agentdojo/bin/pip install -e .
+# 선택: .venv-agentdojo/bin/pip install -e ".[transformers]"  (transformers_pi_detector 방어)
+#       .venv-agentdojo/bin/pip install -e ".[inspect]"       (Phase 5: AgentDojo-Inspect)
+# 2) AgentDyn (third_party/AgentDyn 를 sparse clone, runs/ 제외)
+scripts/setup_agentdyn.sh
+# 3) AutoDojo (third_party/AutoDojo clone + patches/autodojo-ollama.patch 적용)
+scripts/setup_autodojo.sh
 cp .env.example .env                      # 서버/모델 설정 (configs/qwen3.8-27b.env 가 기본값)
 ```
 
@@ -30,9 +41,22 @@ MAX_WORKERS=4 scripts/run_utility.sh   # E1: 유틸리티 (97 tasks)
 MAX_WORKERS=4 scripts/run_attack.sh    # E2: important_instructions (629 cases)
 ATTACK=tool_knowledge scripts/run_attack.sh            # E3: 공격 변형
 DEFENSES="tool_filter repeat_user_prompt" scripts/run_defense.sh   # E4: 방어
-scripts/summarize.sh             # Phase 4: results/<model>_<date>.md / .csv
+scripts/summarize.sh             # Phase 4: results/<bench>_<model>_<date>.md / .csv
 scripts/run_inspect.sh           # Phase 5: AgentDojo-Inspect
+
+# AgentDyn (BENCH=agentdyn 를 붙이면 위 스크립트 전부 AgentDyn venv/suite 로 동작)
+BENCH=agentdyn scripts/run_smoke.sh
+MAX_WORKERS=3 scripts/run_agentdyn.sh              # shopping/github/dailylife: E1 + E2
+BENCH=agentdyn scripts/summarize.sh
+
+# AutoDojo
+BENCH=autodojo scripts/run_smoke.sh
+SOURCE_MODEL=openai/gpt-4o-mini DEFENSES="no_defense spotlighting" scripts/run_autodojo_transfer.sh   # 1단계: 캐시 전이
+SUITES=banking ITERATIONS=8 N_VARIANTS=5 scripts/run_autodojo_optimize.sh                             # 2단계: 직접 최적화
+BENCH=autodojo scripts/summarize.sh
 ```
+
+`SUITES="banking slack"`처럼 suite 목록을 덮어쓸 수 있습니다. 스크립트 뒤에 붙인 인자는 러너로 전달됩니다(예: `-ut user_task_0`).
 
 완료된 태스크는 건너뛰므로 중단 후 재실행이 가능합니다. 다시 돌리려면 `-f`를 넘기세요.
 
@@ -50,6 +74,22 @@ thinking을 켠 상태로 비교 실험을 하려면:
 EXTRA_ARGS="--reasoning-effort '' --no-no-think-tag --logdir runs_think" scripts/run_utility.sh
 ```
 
+## AutoDojo 사용법
+
+AutoDojo는 두 단계입니다.
+
+1. **전이 평가** (`run_autodojo_transfer.sh`): 저장소에 커밋된 캐시 `variants/<suite>/<SOURCE_MODEL>/<defense>/injections.json`(논문의 5개 타깃 모델 × 10개 방어 설정)을 우리 모델에 그대로 주입합니다. 공격자 LLM이 필요 없어 저렴합니다. 캐시를 만든 방어와 같은 방어를 걸어 실행하며, 비교용으로 공격 없음과 정적 `important_instructions`도 함께 돌립니다.
+2. **직접 최적화** (`run_autodojo_optimize.sh`): `optimize_variants.py`로 우리 모델을 타깃 삼아 인젝션을 반복 최적화하고, 만들어진 캐시로 곧바로 벤치마크합니다. **타깃과 최적화(analyzer + rewriter) LLM 모두 Ollama 모델**을 씁니다. 최적화 LLM은 `OPTIMIZER_MODEL`로 바꿀 수 있고(기본은 타깃과 같은 태그), `OLLAMA_REASONING_EFFORT`를 비워 두면 thinking이 켜진 채로 문구를 생성합니다. 결과는 `runs/autodojo/variants/<suite>/<model>/<defense>/injections.json`.
+
+`patches/autodojo-ollama.patch`가 포크에 추가하는 것:
+
+- `vllm_parsed` 타깃이 `LOCAL_LLM_BASE_URL`, `LOCAL_LLM_MODEL_ID`, `LOCAL_LLM_REASONING_EFFORT`를 읽어 원격 Ollama와 특정 모델 태그를 쓰도록 (원본은 localhost 고정 + `/v1/models` 첫 모델 자동 선택)
+- qwen 계열 모델에도 `reasoning_effort`를 보내도록 (원본은 OpenRouter 제약 때문에 항상 생략)
+- 최적화 LLM 프로바이더 `ollama` 추가 (`OLLAMA_BASE_URL`, `OLLAMA_API_KEY`, `OLLAMA_REASONING_EFFORT`)
+- DRIFT 방어 모델도 같은 환경변수로 원격 지정 가능
+
+AutoDojo의 필터 방어(`promptguard`, `piguard`, `protectai`, `datafilter`)는 GPU와 Hugging Face 토큰이 필요하고, `drift`/`progent`/`camel`은 추가 의존성이 필요합니다. 1차 범위는 `no_defense`, `spotlighting`, `reminder`, `sandwich`, `repeat_user_prompt`, `tool_filter`입니다.
+
 ## 결과 해석
 
 | 열 | 의미 |
@@ -64,9 +104,13 @@ EXTRA_ARGS="--reasoning-effort '' --no-no-think-tag --logdir runs_think" scripts
 ## 레이아웃
 
 ```
-agentdojo_ollama/   러너(run.py), OllamaLLM(llm.py), 집계(summarize.py)
-scripts/            Phase별 실행 스크립트 (common.sh 가 configs/ 와 .env 를 로드)
+agentdojo_ollama/   러너(run.py), OllamaLLM(llm.py), 포크 감지(compat.py), 집계(summarize.py)
+scripts/            Phase별 실행 스크립트 (common.sh 가 BENCH/configs/.env 를 처리)
 configs/            모델별 env, Ollama Modelfile
-runs/               벤치마크 로그 (gitignore)
+patches/            AutoDojo 포크용 Ollama 패치
+third_party/        AgentDyn, AutoDojo 체크아웃 (gitignore; setup 스크립트가 핀 커밋으로 받음)
+runs/<bench>/       벤치마크 로그 (gitignore)
 results/            집계 결과 (커밋 대상)
 ```
+
+러너는 세 포크가 공유하는 API(`PipelineConfig(llm=<element>)`, `benchmark_suite_*`, `load_attack`)만 사용하므로 포크별 코드 분기가 없습니다. 로그 경로는 원본/AgentDyn이 `<model>[-<defense>]/<suite>/…`, AutoDojo가 `<model>/<defense>/<suite>/…`이고 집계기는 둘 다 읽습니다.

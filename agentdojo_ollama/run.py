@@ -25,9 +25,11 @@ from agentdojo.logging import OutputLogger
 from agentdojo.models import MODEL_NAMES
 from agentdojo.task_suite.load_suites import get_suite, get_suites
 
+from agentdojo_ollama.compat import detect_bench
 from agentdojo_ollama.llm import OllamaLLM
 
 NO_THINK_SUFFIX = " /no_think"
+BENCH = detect_bench()
 
 
 def build_pipeline(
@@ -146,6 +148,8 @@ def show_results(suite_name: str, results: SuiteResults, with_attack: bool) -> N
 @click.option("--strip-thinking/--keep-thinking", default=True, show_default=True, help="응답 content의 <think> 블록 제거.")
 @click.option("--max-tokens", type=int, default=None, help="응답 최대 토큰(num_predict).")
 @click.option("--timeout", type=float, default=600.0, show_default=True, help="요청당 타임아웃(초). 27B 모델은 넉넉히.")
+@click.option("--autodojo-cache", type=click.Path(exists=True, dir_okay=False), default=None, help="[AutoDojo] --attack autodojo 에 쓸 injections.json (AUTODOJO_CACHE).")
+@click.option("--autodojo-variant", type=int, default=None, help="[AutoDojo] 캐시의 변형 인덱스 (AUTODOJO_VARIANT, 기본 0).")
 def main(
     base_url: str,
     api_key: str,
@@ -170,9 +174,18 @@ def main(
     strip_thinking: bool,
     max_tokens: int | None,
     timeout: float,
+    autodojo_cache: str | None,
+    autodojo_variant: int | None,
 ) -> None:
     for module in modules_to_load:
         importlib.import_module(module)
+
+    if autodojo_cache:
+        os.environ["AUTODOJO_CACHE"] = str(Path(autodojo_cache).resolve())
+    if autodojo_variant is not None:
+        os.environ["AUTODOJO_VARIANT"] = str(autodojo_variant)
+    if attack == "autodojo" and not os.environ.get("AUTODOJO_CACHE"):
+        raise click.UsageError("--attack autodojo 에는 --autodojo-cache (또는 AUTODOJO_CACHE) 가 필요합니다.")
 
     if not suites:
         suites = tuple(get_suites(benchmark_version).keys())
@@ -195,7 +208,7 @@ def main(
         max_tokens=max_tokens,
         timeout=timeout,
     )
-    print(f"Model: {model} @ {base_url} | suites: {', '.join(suites)} | attack: {attack} | defense: {defense}")
+    print(f"Bench: {BENCH} | Model: {model} @ {base_url} | suites: {', '.join(suites)} | attack: {attack} | defense: {defense}")
 
     if max_workers <= 1:
         results = {

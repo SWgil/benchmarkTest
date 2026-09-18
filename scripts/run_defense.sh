@@ -6,7 +6,7 @@ ATTACK="${ATTACK:-important_instructions}"
 DEFENSES="${DEFENSES:-tool_filter repeat_user_prompt spotlighting_with_delimiting}"
 for d in $DEFENSES; do
   echo "### defense=$d (no attack)"
-  $RUN --defense "$d" --max-workers "$MAX_WORKERS" $EXTRA_ARGS "$@"
+  $RUN $SUITE_ARGS --defense "$d" --max-workers "$MAX_WORKERS" $EXTRA_ARGS "$@"
   echo "### defense=$d attack=$ATTACK"
-  $RUN --defense "$d" --attack "$ATTACK" --max-workers "$MAX_WORKERS" $EXTRA_ARGS "$@"
+  $RUN $SUITE_ARGS --defense "$d" --attack "$ATTACK" --max-workers "$MAX_WORKERS" $EXTRA_ARGS "$@"
 done

@@ -17,6 +17,8 @@ Ollama 서버: `http://10.251.36.222:9090`
 | 벤치마크 | 성격 | 비고 |
 |---|---|---|
 | AgentDojo (원본, PyPI `agentdojo` 0.1.35) | 4개 suite(workspace, slack, travel, banking), 97 user task, 27 injection task, 629 공격 케이스 | 1차 대상 |
+| AgentDyn (SaFo-Lab/AgentDyn, arXiv 2602.03117) | AgentDojo 포크. 개방형 suite 3개(shopping, github, dailylife) 60 user task, 560 케이스 추가 | 2차 대상, 구현됨 (`BENCH=agentdyn`) |
+| AutoDojo (xhOwenMa/AutoDojo, arXiv 2606.15057) | AgentDojo 포크. 공격자 LLM이 방어를 상대로 인젝션을 반복 최적화하는 적응형 공격 + 논문 캐시 | 2차 대상, 구현됨 (`BENCH=autodojo`) |
 | AgentDojo-Inspect (UK AISI 포크) | Inspect 프레임워크 이식판, 태스크 버그 수정 + 인젝션 태스크 추가 | `inspect_evals`의 `agentdojo` 태스크 |
 | InjecAgent / ASB(Agent Security Bench) / BIPIA | 동일 주제(간접 프롬프트 인젝션)의 유사 벤치마크 | 필요 시 확장 |
 
@@ -202,6 +204,18 @@ DEFENSES="tool_filter repeat_user_prompt spotlighting_with_delimiting" scripts/r
 
 ## 7. 계열 벤치마크 확장 (Phase 5)
 
+### 7.1 AgentDyn / AutoDojo (구현됨)
+
+두 벤치마크는 모두 `agentdojo` 패키지를 같은 이름으로 수정한 포크라서 venv를 분리한다 (`.venv-agentdyn`, `.venv-autodojo`). `scripts/setup_agentdyn.sh`, `scripts/setup_autodojo.sh`가 핀 커밋(AgentDyn `5353cf7`, AutoDojo `abbcbd8`)으로 받아 설치하고, `scripts/common.sh`의 `BENCH` 스위치가 venv·suite·로그 디렉터리를 고른다. 러너 `agentdojo_ollama`는 세 포크가 공유하는 API만 쓰므로 그대로 동작하며, 집계기는 두 가지 로그 깊이를 모두 읽는다.
+
+- **AgentDyn**: `scripts/run_agentdyn.sh`가 shopping/github/dailylife에 대해 E1 + E2를 돌린다. camel/drift/progent 등 추가 방어는 OpenAI/Google 클라이언트를 직접 요구해 1차 범위에서 제외.
+- **AutoDojo 1단계(전이)**: `scripts/run_autodojo_transfer.sh`가 논문 캐시(`variants/<suite>/<SOURCE_MODEL>/<defense>/`)를 우리 모델에 주입해 정적 공격과 비교한다. 공격자 LLM 불필요.
+- **AutoDojo 2단계(직접 최적화)**: `scripts/run_autodojo_optimize.sh`가 `optimize_variants.py`를 타깃 = Ollama 모델, 최적화 LLM = Ollama 모델(`OPTIMIZER_MODEL`, 기본 동일 태그)로 실행하고 생성된 캐시로 벤치마크한다. 이를 위해 `patches/autodojo-ollama.patch`로 (a) `vllm_parsed` 타깃의 base URL/모델 태그/reasoning_effort 환경변수화, (b) qwen 모델에도 reasoning_effort 전송, (c) 최적화 LLM 프로바이더 `ollama` 추가, (d) DRIFT 방어 모델 원격 지정을 넣었다.
+- 검증: 모의 Ollama 서버로 AgentDyn 3 suite 실행, AutoDojo 캐시 공격·방어 실행, 최적화 1회 반복(타깃 160회 tool-calling 요청 + 최적화 LLM 8회 텍스트 요청, 모두 `reasoning_effort=none`/명시 temperature) → 캐시 생성 → 벤치마크까지 확인.
+- 실행 비용 주의: 2단계는 (injection task × vector × iteration × screening user task) 만큼 타깃 호출이 발생한다. 27B 모델 단일 GPU에서는 `--max-injection-tasks`, `ITERATIONS`, `N_VARIANTS`를 줄여 먼저 시간을 잰다.
+
+### 7.2 AgentDojo-Inspect
+
 1. **AgentDojo-Inspect**: `pip install -e ".[inspect]"` 후 `scripts/run_inspect.sh` 실행 (`inspect eval inspect_evals/agentdojo --model openai-api/ollama/<tag>`). Inspect의 `openai-api` 프로바이더는 `OPENAI_BASE_URL`로 임의의 OpenAI 호환 서버를 가리킬 수 있어 같은 Ollama 서버를 재사용한다. `workspace_plus`의 sandbox 태스크는 Docker가 필요하므로 기본은 `with_sandbox_tasks=no`.
 2. 원본 AgentDojo와 Inspect판의 태스크 차이(버그 수정, 추가 인젝션 태스크)를 결과에 분리 기록한다.
 3. 여유가 되면 InjecAgent / ASB로 동일 모델을 평가해 벤치마크 간 ASR 경향을 비교한다.
@@ -215,4 +229,6 @@ DEFENSES="tool_filter repeat_user_prompt spotlighting_with_delimiting" scripts/r
 - [ ] Phase 2 `scripts/run_smoke.sh` 통과, 태스크당 소요 시간 기록
 - [ ] Phase 3 E1 → E2 → E3 → E4 순으로 실행, 각 단계 결과를 `results/`에 커밋
 - [ ] Phase 4 `scripts/summarize.sh`로 비교표, 공식 리더보드와 대조
-- [ ] Phase 5 `scripts/run_inspect.sh`로 AgentDojo-Inspect 확장
+- [x] Phase 5a AgentDyn / AutoDojo 통합 (setup 스크립트, 패치, 실행 스크립트, 모의 서버 검증)
+- [ ] Phase 5b 사내망에서 AgentDyn 3 suite, AutoDojo 전이 → 직접 최적화 순으로 실행
+- [ ] Phase 5c `scripts/run_inspect.sh`로 AgentDojo-Inspect 확장

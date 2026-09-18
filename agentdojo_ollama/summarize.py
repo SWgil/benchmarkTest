@@ -45,10 +45,24 @@ class Agg:
 
 
 def scan(logdir: Path) -> dict[tuple[str, str, str], Agg]:
-    """(pipeline, attack, suite) -> Agg. attack 'none'은 공격 없는 유틸리티 실행."""
+    """(pipeline, attack, suite) -> Agg. attack 'none'은 공격 없는 유틸리티 실행.
+
+    경로는 뒤에서부터 `<suite>/<user_task>/<attack>/<injection_task>.json` 으로 해석한다.
+    앞쪽 나머지가 pipeline 이름이다 (원본/AgentDyn: `<model>[-<defense>]`, AutoDojo: `<model>/<defense>`).
+    """
     table: dict[tuple[str, str, str], Agg] = defaultdict(Agg)
-    for path in sorted(logdir.glob("*/*/*/*/*.json")):
-        pipeline, suite, user_task, attack = path.relative_to(logdir).parts[:4]
+    for path in sorted(logdir.rglob("*.json")):
+        parts = path.relative_to(logdir).parts
+        if len(parts) < 5:
+            continue
+        pipeline = "/".join(parts[:-4])
+        suite, user_task, attack = parts[-4:-1]
+        # 벤치마크 로그만: <user_task|injection_task_N>/<attack>/<none|injection_task_N>.json
+        # (AutoDojo 최적화 캐시 runs/autodojo/variants/... 등은 제외)
+        if not user_task.startswith(("user_task", "injection_task")):
+            continue
+        if not (path.name == "none.json" or path.stem.startswith("injection_task")):
+            continue
         try:
             rec = json.loads(path.read_text())
         except json.JSONDecodeError:
