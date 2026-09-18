@@ -78,7 +78,7 @@ EXTRA_ARGS="--reasoning-effort '' --no-no-think-tag --logdir runs_think" scripts
 
 AutoDojo는 두 단계입니다.
 
-1. **전이 평가** (`run_autodojo_transfer.sh`): 저장소에 커밋된 캐시 `variants/<suite>/<SOURCE_MODEL>/<defense>/injections.json`(논문의 5개 타깃 모델 × 10개 방어 설정)을 우리 모델에 그대로 주입합니다. 공격자 LLM이 필요 없어 저렴합니다. 캐시를 만든 방어와 같은 방어를 걸어 실행하며, 비교용으로 공격 없음과 정적 `important_instructions`도 함께 돌립니다.
+1. **전이 평가** (`run_autodojo_transfer.sh`): 저장소에 커밋된 캐시 `variants/<suite>/<SOURCE_MODEL>/<defense>/injections.json`(논문의 5개 타깃 모델 × 10개 방어 설정)을 우리 모델에 그대로 주입합니다. 공격자 LLM이 필요 없어 저렴합니다. 캐시를 만든 방어와 같은 방어를 걸어 실행하고, 방어를 건 정적 `important_instructions`도 비교용으로 돌립니다. 방어 없는 기준선(공격 없음, 정적 공격)은 같은 태스크를 `BENCH=agentdojo`가 이미 돌리므로 기본으로 건너뛰며, `RUN_BASELINES=1`로 켤 수 있습니다.
 2. **직접 최적화** (`run_autodojo_optimize.sh`): `optimize_variants.py`로 우리 모델을 타깃 삼아 인젝션을 반복 최적화하고, 만들어진 캐시로 곧바로 벤치마크합니다. **타깃과 최적화(analyzer + rewriter) LLM 모두 Ollama 모델**을 씁니다. 최적화 LLM은 `OPTIMIZER_MODEL`로 바꿀 수 있고(기본은 타깃과 같은 태그), `OLLAMA_REASONING_EFFORT`를 비워 두면 thinking이 켜진 채로 문구를 생성합니다. 결과는 `runs/autodojo/variants/<suite>/<model>/<defense>/injections.json`.
 
 `patches/autodojo-ollama.patch`가 포크에 추가하는 것:
@@ -89,6 +89,14 @@ AutoDojo는 두 단계입니다.
 - DRIFT 방어 모델도 같은 환경변수로 원격 지정 가능
 
 AutoDojo의 필터 방어(`promptguard`, `piguard`, `protectai`, `datafilter`)는 GPU와 Hugging Face 토큰이 필요하고, `drift`/`progent`/`camel`은 추가 의존성이 필요합니다. 1차 범위는 `no_defense`, `spotlighting`, `reminder`, `sandwich`, `repeat_user_prompt`, `tool_filter`입니다.
+
+## 겹치는 suite 처리
+
+banking, slack, travel, workspace는 세 벤치마크에서 태스크 코드와 데이터가 동일합니다(diff로 확인). 그래서:
+
+- `BENCH=agentdyn` 기본 suite는 AgentDyn 고유의 shopping, github, dailylife뿐입니다. 원본 4개는 `SUITES=`로 명시할 때만 돕니다.
+- `BENCH=autodojo`는 최적화 캐시가 banking, slack, travel에만 있어 그 suite를 쓰지만, 새로 측정하는 것은 공격(최적화 인젝션)과 AutoDojo 고유 방어입니다. 원본과 중복되는 방어 없는 기준선은 기본으로 건너뜁니다.
+- 비교표를 만들 때는 `results/agentdojo_*`의 E1/E2 행을 AutoDojo 결과의 기준선으로 함께 놓으면 됩니다.
 
 ## 결과 해석
 
