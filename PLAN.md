@@ -8,6 +8,7 @@ Ollama 서버: `http://10.251.36.222:9090`
 
 ## 0. 목표와 범위
 
+0. **측정 대상**: 방어 기법이 없는 상태에서의 **LLM 자체 IPI(간접 프롬프트 인젝션) 저항성**. 방어 기법 평가는 범위 밖이며, 관련 스크립트는 선택 사항으로만 남긴다.
 1. **최종 목표**: AgentDojo 계열(프롬프트 인젝션 기반 에이전트 보안 벤치마크)에 대해 로컬 Ollama 모델을 평가할 수 있는 재현 가능한 환경을 만든다.
 2. **1차 목표**: 원본 AgentDojo(ethz-spylab/agentdojo)로 `qwen3.8:27b`의 **유틸리티(utility)**, **공격 성공률(ASR)**, **공격 하 유틸리티**를 측정한다.
 3. **2차 목표**: 같은 파이프라인을 AgentDojo 파생/계열 벤치마크로 확장한다.
@@ -161,7 +162,7 @@ AgentDojo 논문의 표준 리포팅 항목을 그대로 따른다. 벤치마크
 | E1. 유틸리티(공격 없음) | `--attack` 없음, 전체 suite | Utility (97 태스크) |
 | E2. 공격 하 성능 | `--attack important_instructions` | Targeted ASR, Utility under attack (629 케이스) |
 | E3. 공격 변형 | `tool_knowledge`, `important_instructions_no_names` 등 | ASR 비교 |
-| E4. 방어 | `--defense tool_filter` / `repeat_user_prompt` / `spotlighting_with_delimiting` / `transformers_pi_detector` | 방어별 Utility·ASR |
+| (선택, 범위 밖) E4. 방어 | `--defense tool_filter` 등 | 방어별 Utility·ASR. 기본 워크플로에서 제외 |
 
 실행 예:
 
@@ -169,7 +170,7 @@ AgentDojo 논문의 표준 리포팅 항목을 그대로 따른다. 벤치마크
 MAX_WORKERS=4 scripts/run_utility.sh                      # E1
 MAX_WORKERS=4 scripts/run_attack.sh                       # E2
 ATTACK=tool_knowledge MAX_WORKERS=4 scripts/run_attack.sh # E3
-DEFENSES="tool_filter repeat_user_prompt spotlighting_with_delimiting" scripts/run_defense.sh  # E4
+# (선택, 범위 밖) DEFENSES="tool_filter repeat_user_prompt spotlighting_with_delimiting" scripts/run_defense.sh
 ```
 
 `--max-workers`는 suite 단위 병렬이므로 최대 4가 의미 있다. 이미 완료된 태스크는 건너뛰므로 중단 후 재실행이 가능하고, 다시 돌리려면 `-f`를 준다.
@@ -209,7 +210,8 @@ DEFENSES="tool_filter repeat_user_prompt spotlighting_with_delimiting" scripts/r
 두 벤치마크는 모두 `agentdojo` 패키지를 같은 이름으로 수정한 포크라서 venv를 분리한다 (`.venv-agentdyn`, `.venv-autodojo`). `scripts/setup_agentdyn.sh`, `scripts/setup_autodojo.sh`가 핀 커밋(AgentDyn `5353cf7`, AutoDojo `abbcbd8`)으로 받아 설치하고, `scripts/common.sh`의 `BENCH` 스위치가 venv·suite·로그 디렉터리를 고른다. 러너 `agentdojo_ollama`는 세 포크가 공유하는 API만 쓰므로 그대로 동작하며, 집계기는 두 가지 로그 깊이를 모두 읽는다.
 
 - **AgentDyn**: `scripts/run_agentdyn.sh`가 shopping/github/dailylife에 대해 E1 + E2를 돌린다. camel/drift/progent 등 추가 방어는 OpenAI/Google 클라이언트를 직접 요구해 1차 범위에서 제외.
-- **AutoDojo 1단계(전이)**: `scripts/run_autodojo_transfer.sh`가 논문 캐시(`variants/<suite>/<SOURCE_MODEL>/<defense>/`)를 우리 모델에 주입해 정적 공격과 비교한다. 공격자 LLM 불필요.
+- **AutoDojo 범위**: 포크에는 방어 9종이 있지만 이 저장소는 방어 없는 `no_defense` 셀만 쓴다. 정적 공격 대비 최적화된 공격에서 ASR이 얼마나 오르는지(LLM 자체 저항성의 상한)를 본다.
+- **AutoDojo 1단계(전이)**: `scripts/run_autodojo_transfer.sh`가 논문 캐시(`variants/<suite>/<SOURCE_MODEL>/no_defense/`)를 우리 모델에 주입해 정적 공격과 비교한다. 공격자 LLM 불필요.
 - **AutoDojo 2단계(직접 최적화)**: `scripts/run_autodojo_optimize.sh`가 `optimize_variants.py`를 타깃 = Ollama 모델, 최적화 LLM = Ollama 모델(`OPTIMIZER_MODEL`, 기본 동일 태그)로 실행하고 생성된 캐시로 벤치마크한다. 이를 위해 `patches/autodojo-ollama.patch`로 (a) `vllm_parsed` 타깃의 base URL/모델 태그/reasoning_effort 환경변수화, (b) qwen 모델에도 reasoning_effort 전송, (c) 최적화 LLM 프로바이더 `ollama` 추가, (d) DRIFT 방어 모델 원격 지정을 넣었다.
 - 검증: 모의 Ollama 서버로 AgentDyn 3 suite 실행, AutoDojo 캐시 공격·방어 실행, 최적화 1회 반복(타깃 160회 tool-calling 요청 + 최적화 LLM 8회 텍스트 요청, 모두 `reasoning_effort=none`/명시 temperature) → 캐시 생성 → 벤치마크까지 확인.
 - 실행 비용 주의: 2단계는 (injection task × vector × iteration × screening user task) 만큼 타깃 호출이 발생한다. 27B 모델 단일 GPU에서는 `--max-injection-tasks`, `ITERATIONS`, `N_VARIANTS`를 줄여 먼저 시간을 잰다.
@@ -227,7 +229,7 @@ DEFENSES="tool_filter repeat_user_prompt spotlighting_with_delimiting" scripts/r
 - [x] Phase 1 저장소 스캐폴딩 + 러너/집계기 구현, 모의 서버로 검증
 - [ ] Phase 0 사내망에서 `scripts/check_ollama.sh` 실행 → 모델 태그·tool calling·num_ctx 확정
 - [ ] Phase 2 `scripts/run_smoke.sh` 통과, 태스크당 소요 시간 기록
-- [ ] Phase 3 E1 → E2 → E3 → E4 순으로 실행, 각 단계 결과를 `results/`에 커밋
+- [ ] Phase 3 E1 → E2 → E3 순으로 실행, 각 단계 결과를 `results/`에 커밋 (E4 방어는 범위 밖)
 - [ ] Phase 4 `scripts/summarize.sh`로 비교표, 공식 리더보드와 대조
 - [x] Phase 5a AgentDyn / AutoDojo 통합 (setup 스크립트, 패치, 실행 스크립트, 모의 서버 검증)
 - [ ] Phase 5b 사내망에서 AgentDyn 3 suite, AutoDojo 전이 → 직접 최적화 순으로 실행

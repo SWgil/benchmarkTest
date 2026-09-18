@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # AutoDojo 2단계: 우리 Ollama 모델을 타깃으로 인젝션을 직접 최적화한다.
 # 공격자(analyzer + rewriter) LLM도 Ollama 모델을 쓴다 (OPTIMIZER_MODEL, 기본 = 타깃과 같은 모델).
-#   SUITES="banking" ITERATIONS=8 N_VARIANTS=5 DEFENSE=spotlighting scripts/run_autodojo_optimize.sh
+#   SUITES="banking" ITERATIONS=8 N_VARIANTS=5 scripts/run_autodojo_optimize.sh
+#   DEFENSE 는 기본 비움 = 방어 없는 타깃을 상대로 최적화 (이 저장소의 목적). 방어 실험 시에만 DEFENSE=spotlighting.
 #   OPT_EXTRA="--max-injection-tasks 2 --parallel-eval --eval-concurrency 4" 로 optimize_variants.py 인자 추가
 # 결과: runs/autodojo/variants/<suite>/<model>/<defense>/injections.json 이 생기고, 이어서 --attack autodojo 로 벤치마크한다.
 BENCH=autodojo source "$(dirname "$0")/common.sh"
