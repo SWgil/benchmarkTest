@@ -8,7 +8,7 @@
 |---|---|---|---|
 | `agentdojo` | [AgentDojo](https://github.com/ethz-spylab/agentdojo) 0.1.35 / v1.2.2 | workspace, slack, travel, banking (97 tasks, 629 cases) | `pip install -e .` |
 | `agentdyn` | [AgentDyn](https://github.com/SaFo-Lab/AgentDyn) | + shopping, github, dailylife (60 open-ended tasks, 560 cases) | `scripts/setup_agentdyn.sh` |
-| `autodojo` | [AutoDojo](https://github.com/xhOwenMa/AutoDojo) | 적응형 공격(방어 없는 `no_defense` 셀만 사용): 커밋된 최적화 캐시 전이 평가 + 우리 모델 대상 직접 최적화 | `scripts/setup_autodojo.sh` |
+| `autodojo` | [AutoDojo](https://github.com/xhOwenMa/AutoDojo) | 적응형 공격: 우리 모델(방어 없음)을 타깃으로 인젝션을 직접 최적화한 뒤 벤치마크 | `scripts/setup_autodojo.sh` |
 
 세 벤치마크는 모두 `agentdojo`라는 같은 패키지 이름의 포크라서 **venv를 따로** 씁니다(`.venv-agentdojo`, `.venv-agentdyn`, `.venv-autodojo`). `scripts/common.sh`가 `BENCH` 값에 따라 venv, 기본 suite, 로그 디렉터리(`runs/<BENCH>/`)를 고릅니다.
 
@@ -52,9 +52,8 @@ MAX_WORKERS=3 scripts/run_agentdyn.sh              # shopping/github/dailylife: 
 BENCH=agentdyn scripts/summarize.sh
 
 # AutoDojo
-BENCH=autodojo scripts/run_smoke.sh
-SOURCE_MODEL=openai/gpt-4o-mini scripts/run_autodojo_transfer.sh      # 1단계: no_defense 캐시 전이
-SUITES=banking ITERATIONS=8 N_VARIANTS=5 scripts/run_autodojo_optimize.sh   # 2단계: 방어 없는 타깃 직접 최적화
+BENCH=autodojo scripts/run_smoke.sh                                         # 연결 확인용 (정적 공격)
+SUITES=banking ITERATIONS=8 N_VARIANTS=5 scripts/run_autodojo_optimize.sh   # 방어 없는 타깃 직접 최적화 + 벤치마크
 BENCH=autodojo scripts/summarize.sh
 ```
 
@@ -78,12 +77,14 @@ EXTRA_ARGS="--reasoning-effort '' --no-no-think-tag --logdir runs_think" scripts
 
 ## AutoDojo 사용법
 
-AutoDojo 논문의 주제는 "방어를 상대로 한 적응형 공격"이라 포크에 방어 9종이 들어 있지만, 이 저장소는 그중 **방어 없는 `no_defense` 경로만** 씁니다. 목적은 정적 `important_instructions` 대신 모델에 맞춰 최적화된 인젝션을 썼을 때 방어 없는 모델의 ASR이 얼마나 오르는지, 즉 LLM 자체 저항성의 상한을 보는 것입니다.
+AutoDojo 논문의 주제는 "방어를 상대로 한 적응형 공격"이라 포크에 방어 9종이 들어 있지만, 이 저장소는 **방어 없는 타깃에 대한 직접 최적화만** 수행합니다. 목적은 정적 `important_instructions` 대신 우리 모델에 맞춰 최적화된 인젝션을 썼을 때 ASR이 얼마나 오르는지, 즉 LLM 자체 저항성의 상한을 보는 것입니다. 논문에 커밋된 다른 모델용 캐시의 전이 평가는 하지 않습니다(다른 모델에 맞춰진 문구이고, banking 등은 상당수 셀이 정적 공격과 동일해 의미가 적음).
 
-1. **전이 평가** (`run_autodojo_transfer.sh`): 저장소에 커밋된 캐시 `variants/<suite>/<SOURCE_MODEL>/no_defense/injections.json`(논문의 5개 타깃 모델)을 우리 모델에 그대로 주입합니다. 공격자 LLM이 필요 없어 저렴합니다. 방어 없는 기준선(공격 없음, 정적 공격)은 같은 태스크를 `BENCH=agentdojo`가 이미 돌리므로 기본으로 건너뛰며, `RUN_BASELINES=1`로 켤 수 있습니다. `SOURCE_MODEL`을 바꿔 여러 원천 모델의 캐시를 비교할 수 있습니다.
-2. **직접 최적화** (`run_autodojo_optimize.sh`): `optimize_variants.py`로 우리 모델(방어 없음)을 타깃 삼아 인젝션을 반복 최적화하고, 만들어진 캐시로 곧바로 벤치마크합니다. **타깃과 최적화(analyzer + rewriter) LLM 모두 Ollama 모델**을 씁니다. 최적화 LLM은 `OPTIMIZER_MODEL`로 바꿀 수 있고(기본은 타깃과 같은 태그), `OLLAMA_REASONING_EFFORT`를 비워 두면 thinking이 켜진 채로 문구를 생성합니다. 결과는 `runs/autodojo/variants/<suite>/<model>/no_defense/injections.json`.
+`run_autodojo_optimize.sh`는 suite마다 두 단계를 이어서 실행합니다.
 
-방어 실험이 필요해지면 `DEFENSES="no_defense spotlighting"`(전이) 또는 `DEFENSE=spotlighting`(최적화)로 켤 수 있습니다.
+1. `optimize_variants.py`로 우리 모델을 타깃 삼아 인젝션을 반복 최적화합니다. **타깃과 최적화(analyzer + rewriter) LLM 모두 Ollama 모델**을 씁니다. 최적화 LLM은 `OPTIMIZER_MODEL`로 바꿀 수 있고(기본은 타깃과 같은 태그), `OLLAMA_REASONING_EFFORT`를 비워 두면 thinking이 켜진 채로 문구를 생성합니다. 결과 캐시는 `runs/autodojo/variants/<suite>/<model>/no_defense/injections.json`.
+2. 만들어진 캐시로 `--attack autodojo` 벤치마크를 돌립니다. 로그는 `runs/autodojo/<model>/no_defense/<suite>/…`.
+
+주요 변수: `SUITES`(기본 banking slack travel; github/shopping/dailylife도 가능), `ITERATIONS`(기본 8), `N_VARIANTS`(기본 5), `OPT_EXTRA`(예: `--max-injection-tasks 2 --parallel-eval --eval-concurrency 4`). 비용은 injection task × vector × 반복 × screening user task만큼 타깃 호출이 발생하므로 작게 시작해 시간을 재세요. 방어 실험이 필요해지면 `DEFENSE=spotlighting`으로 켤 수 있습니다.
 
 `patches/autodojo-ollama.patch`가 포크에 추가하는 것:
 
@@ -99,8 +100,7 @@ AutoDojo 논문의 주제는 "방어를 상대로 한 적응형 공격"이라 �
 banking, slack, travel, workspace는 세 벤치마크에서 태스크 코드와 데이터가 동일합니다(diff로 확인). 그래서:
 
 - `BENCH=agentdyn` 기본 suite는 AgentDyn 고유의 shopping, github, dailylife뿐입니다. 원본 4개는 `SUITES=`로 명시할 때만 돕니다.
-- `BENCH=autodojo`는 최적화 캐시가 banking, slack, travel에만 있어 그 suite를 쓰지만, 새로 측정하는 것은 공격(최적화 인젝션)입니다. 원본과 중복되는 기준선(공격 없음, 정적 공격)은 기본으로 건너뜁니다.
-- 비교표를 만들 때는 `results/agentdojo_*`의 E1/E2 행을 AutoDojo 결과의 기준선으로 함께 놓으면 됩니다.
+- `BENCH=autodojo`는 태스크가 아니라 공격(우리 모델에 맞춰 최적화된 인젝션)을 새로 측정합니다. 기준선(공격 없음, 정적 공격)은 다시 돌리지 않고 `results/agentdojo_*`의 E1/E2 행을 함께 놓고 비교합니다. AgentDyn 고유 suite에서 최적화하려면 `SUITES="shopping github dailylife"`로 지정합니다.
 
 ## 결과 해석
 

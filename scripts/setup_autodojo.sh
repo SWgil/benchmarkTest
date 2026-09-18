@@ -36,4 +36,4 @@ if ! "$VENV/bin/python" -c "import nltk; nltk.data.find('tokenizers/punkt_tab')"
     || echo "[setup] !! punkt_tab 다운로드 실패. 프록시 환경이면: NLTK_ALLOW_PROXIED_URLOPEN=1 $VENV/bin/python -c \"import nltk; nltk.download('punkt_tab')\""
 fi
 "$VENV/bin/python" -c "from agentdojo_ollama.compat import detect_bench; print('[setup] detected bench:', detect_bench())"
-echo "[setup] done. 사용: BENCH=autodojo scripts/run_autodojo_transfer.sh / scripts/run_autodojo_optimize.sh"
+echo "[setup] done. 사용: scripts/run_autodojo_optimize.sh"

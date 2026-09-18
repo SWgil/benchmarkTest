@@ -210,9 +210,8 @@ ATTACK=tool_knowledge MAX_WORKERS=4 scripts/run_attack.sh # E3
 두 벤치마크는 모두 `agentdojo` 패키지를 같은 이름으로 수정한 포크라서 venv를 분리한다 (`.venv-agentdyn`, `.venv-autodojo`). `scripts/setup_agentdyn.sh`, `scripts/setup_autodojo.sh`가 핀 커밋(AgentDyn `5353cf7`, AutoDojo `abbcbd8`)으로 받아 설치하고, `scripts/common.sh`의 `BENCH` 스위치가 venv·suite·로그 디렉터리를 고른다. 러너 `agentdojo_ollama`는 세 포크가 공유하는 API만 쓰므로 그대로 동작하며, 집계기는 두 가지 로그 깊이를 모두 읽는다.
 
 - **AgentDyn**: `scripts/run_agentdyn.sh`가 shopping/github/dailylife에 대해 E1 + E2를 돌린다. camel/drift/progent 등 추가 방어는 OpenAI/Google 클라이언트를 직접 요구해 1차 범위에서 제외.
-- **AutoDojo 범위**: 포크에는 방어 9종이 있지만 이 저장소는 방어 없는 `no_defense` 셀만 쓴다. 정적 공격 대비 최적화된 공격에서 ASR이 얼마나 오르는지(LLM 자체 저항성의 상한)를 본다.
-- **AutoDojo 1단계(전이)**: `scripts/run_autodojo_transfer.sh`가 논문 캐시(`variants/<suite>/<SOURCE_MODEL>/no_defense/`)를 우리 모델에 주입해 정적 공격과 비교한다. 공격자 LLM 불필요.
-- **AutoDojo 2단계(직접 최적화)**: `scripts/run_autodojo_optimize.sh`가 `optimize_variants.py`를 타깃 = Ollama 모델, 최적화 LLM = Ollama 모델(`OPTIMIZER_MODEL`, 기본 동일 태그)로 실행하고 생성된 캐시로 벤치마크한다. 이를 위해 `patches/autodojo-ollama.patch`로 (a) `vllm_parsed` 타깃의 base URL/모델 태그/reasoning_effort 환경변수화, (b) qwen 모델에도 reasoning_effort 전송, (c) 최적화 LLM 프로바이더 `ollama` 추가, (d) DRIFT 방어 모델 원격 지정을 넣었다.
+- **AutoDojo 범위**: 포크에는 방어 9종이 있지만 이 저장소는 방어 없는 타깃에 대한 **직접 최적화만** 수행한다. 정적 공격 대비 최적화된 공격에서 ASR이 얼마나 오르는지(LLM 자체 저항성의 상한)를 본다. 논문 캐시 전이 평가는 제외했다(다른 모델용 문구이고 banking은 대부분 셀이 정적 공격과 동일).
+- **AutoDojo 직접 최적화**: `scripts/run_autodojo_optimize.sh`가 `optimize_variants.py`를 타깃 = Ollama 모델, 최적화 LLM = Ollama 모델(`OPTIMIZER_MODEL`, 기본 동일 태그)로 실행하고 생성된 캐시로 벤치마크한다. 이를 위해 `patches/autodojo-ollama.patch`로 (a) `vllm_parsed` 타깃의 base URL/모델 태그/reasoning_effort 환경변수화, (b) qwen 모델에도 reasoning_effort 전송, (c) 최적화 LLM 프로바이더 `ollama` 추가, (d) DRIFT 방어 모델 원격 지정을 넣었다.
 - 검증: 모의 Ollama 서버로 AgentDyn 3 suite 실행, AutoDojo 캐시 공격·방어 실행, 최적화 1회 반복(타깃 160회 tool-calling 요청 + 최적화 LLM 8회 텍스트 요청, 모두 `reasoning_effort=none`/명시 temperature) → 캐시 생성 → 벤치마크까지 확인.
 - 실행 비용 주의: 2단계는 (injection task × vector × iteration × screening user task) 만큼 타깃 호출이 발생한다. 27B 모델 단일 GPU에서는 `--max-injection-tasks`, `ITERATIONS`, `N_VARIANTS`를 줄여 먼저 시간을 잰다.
 
@@ -232,5 +231,5 @@ ATTACK=tool_knowledge MAX_WORKERS=4 scripts/run_attack.sh # E3
 - [ ] Phase 3 E1 → E2 → E3 순으로 실행, 각 단계 결과를 `results/`에 커밋 (E4 방어는 범위 밖)
 - [ ] Phase 4 `scripts/summarize.sh`로 비교표, 공식 리더보드와 대조
 - [x] Phase 5a AgentDyn / AutoDojo 통합 (setup 스크립트, 패치, 실행 스크립트, 모의 서버 검증)
-- [ ] Phase 5b 사내망에서 AgentDyn 3 suite, AutoDojo 전이 → 직접 최적화 순으로 실행
+- [ ] Phase 5b 사내망에서 AgentDyn 3 suite, AutoDojo 직접 최적화 실행
 - [ ] Phase 5c `scripts/run_inspect.sh`로 AgentDojo-Inspect 확장

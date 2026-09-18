@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# AutoDojo 2단계: 우리 Ollama 모델을 타깃으로 인젝션을 직접 최적화한다.
+# AutoDojo: 우리 Ollama 모델(방어 없음)을 타깃으로 인젝션을 직접 최적화하고, 만든 캐시로 벤치마크한다.
+# (논문 캐시 전이 평가는 하지 않는다. 캐시는 다른 모델에 맞춰진 것이고 상당수 셀이 정적 공격과 같아 의미가 적다.)
 # 공격자(analyzer + rewriter) LLM도 Ollama 모델을 쓴다 (OPTIMIZER_MODEL, 기본 = 타깃과 같은 모델).
 #   SUITES="banking" ITERATIONS=8 N_VARIANTS=5 scripts/run_autodojo_optimize.sh
 #   DEFENSE 는 기본 비움 = 방어 없는 타깃을 상대로 최적화 (이 저장소의 목적). 방어 실험 시에만 DEFENSE=spotlighting.
