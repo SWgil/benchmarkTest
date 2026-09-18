@@ -2,7 +2,7 @@
 
 작성일: 2026-09-18
 대상 모델: `qwen3.8:27b` (Ollama)
-Ollama 서버: `http://10.25.36.222:9090`
+Ollama 서버: `http://10.251.36.222:9090`
 
 ---
 
@@ -24,16 +24,16 @@ Ollama 서버: `http://10.25.36.222:9090`
 
 ## 1. 사전 확인 (Phase 0)
 
-이 항목들은 실제 GPU/Ollama 서버가 있는 곳(사내망)에서 수행한다. 이 저장소를 작성한 원격 컨테이너에서는 `10.25.36.222`에 접근이 되지 않았다.
+이 항목들은 실제 GPU/Ollama 서버가 있는 곳(사내망)에서 수행한다. 이 저장소를 작성한 원격 컨테이너에서는 `10.251.36.222`에 접근이 되지 않았다.
 
 - [ ] **모델 태그 확인**. `qwen3.8:27b`라는 태그가 실제로 서버에 있는지 확인한다. 오타(예: `qwen3:27b`, `qwen3.5:27b`)일 가능성이 있으므로 아래 출력에서 정확한 이름을 확정한다.
   ```bash
-  curl -s http://10.25.36.222:9090/api/tags | python3 -m json.tool | grep '"name"'
+  curl -s http://10.251.36.222:9090/api/tags | python3 -m json.tool | grep '"name"'
   ```
 - [ ] **OpenAI 호환 엔드포인트 동작 확인** (AgentDojo는 `/v1/chat/completions` + `tools`를 사용).
   ```bash
-  curl -s http://10.25.36.222:9090/v1/models
-  curl -s http://10.25.36.222:9090/v1/chat/completions \
+  curl -s http://10.251.36.222:9090/v1/models
+  curl -s http://10.251.36.222:9090/v1/chat/completions \
     -H 'Content-Type: application/json' \
     -d '{"model":"qwen3.8:27b","messages":[{"role":"user","content":"서울 날씨 알려줘"}],
          "tools":[{"type":"function","function":{"name":"get_weather","description":"도시 날씨 조회",
@@ -106,13 +106,13 @@ cp .env.example .env
 `.env`:
 
 ```dotenv
-OLLAMA_BASE_URL=http://10.25.36.222:9090/v1
+OLLAMA_BASE_URL=http://10.251.36.222:9090/v1
 OLLAMA_API_KEY=ollama
 OLLAMA_MODEL=qwen3.8:27b
 MODEL_PROSE_NAME=Qwen
 ```
 
-실행: `agentdojo-ollama --model qwen3.8:27b --base-url http://10.25.36.222:9090/v1 ...` 또는 `scripts/*.sh`.
+실행: `agentdojo-ollama --model qwen3.8:27b --base-url http://10.251.36.222:9090/v1 ...` 또는 `scripts/*.sh`.
 
 ### 2.4 검증 상태
 
@@ -183,7 +183,7 @@ DEFENSES="tool_filter repeat_user_prompt spotlighting_with_delimiting" scripts/r
 - **(A) 모델 태그 불일치**: `qwen3.8:27b`가 없으면 Phase 0에서 확정한 실제 태그로 `configs/`를 수정한다.
 - **(B) 네이티브 tool calling 실패**: Ollama의 OpenAI 호환 API가 tool_calls를 반환하지 않거나 파싱이 불안정하면 AgentDojo의 `local` 프로바이더(`LocalLLM`, 프롬프트 기반 tool 포맷)를 쓴다. 이 프로바이더는 `localhost:$LOCAL_LLM_PORT`로 고정되어 있으므로 포트 포워딩으로 우회한다.
   ```bash
-  ssh -N -L 8000:10.25.36.222:9090 <점프호스트>   # 또는 socat
+  ssh -N -L 8000:10.251.36.222:9090 <점프호스트>   # 또는 socat
   LOCAL_LLM_PORT=8000 python -m agentdojo.scripts.benchmark --model local --model-id qwen3.8:27b ...
   ```
   이 경로는 `runs/local/...`에 로그를 남기므로 집계 시 pipeline 이름이 달라진다.

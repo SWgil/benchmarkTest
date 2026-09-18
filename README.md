@@ -1,6 +1,6 @@
 # benchmarkTest — AgentDojo 계열 벤치마크 × Ollama(qwen3.8:27b)
 
-로컬 Ollama 서버(`10.25.36.222:9090`)의 모델로 [AgentDojo](https://github.com/ethz-spylab/agentdojo) 프롬프트 인젝션 벤치마크를 실행하고 집계하는 환경입니다. 전체 계획은 [PLAN.md](PLAN.md)를 보세요.
+로컬 Ollama 서버(`10.251.36.222:9090`)의 모델로 [AgentDojo](https://github.com/ethz-spylab/agentdojo) 프롬프트 인젝션 벤치마크를 실행하고 집계하는 환경입니다. 전체 계획은 [PLAN.md](PLAN.md)를 보세요.
 
 ## 왜 자체 러너인가
 
@@ -39,7 +39,7 @@ scripts/run_inspect.sh           # Phase 5: AgentDojo-Inspect
 직접 실행할 때:
 
 ```bash
-agentdojo-ollama --model qwen3.8:27b --base-url http://10.25.36.222:9090/v1 \
+agentdojo-ollama --model qwen3.8:27b --base-url http://10.251.36.222:9090/v1 \
   -s workspace -ut user_task_0 -it injection_task_0 --attack important_instructions
 agentdojo-ollama --help
 ```
