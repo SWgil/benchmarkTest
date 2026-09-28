@@ -102,6 +102,26 @@ banking, slack, travel, workspace는 세 벤치마크에서 태스크 코드와 
 - `BENCH=agentdyn` 기본 suite는 AgentDyn 고유의 shopping, github, dailylife뿐입니다. 원본 4개는 `SUITES=`로 명시할 때만 돕니다.
 - `BENCH=autodojo`는 태스크가 아니라 공격(우리 모델에 맞춰 최적화된 인젝션)을 새로 측정합니다. 기준선(공격 없음, 정적 공격)은 다시 돌리지 않고 `results/agentdojo_*`의 E1/E2 행을 함께 놓고 비교합니다. AgentDyn 고유 suite에서 최적화하려면 `SUITES="shopping github dailylife"`로 지정합니다.
 
+## 공격 변형 간 차이 분석
+
+`summarize.sh`는 suite 단위 집계만 하므로, 예컨대 banking에서 `direct` ASR이 `ignore_previous`보다 훨씬 높게 나온 이유는 보이지 않습니다. `compare_attacks.sh`는 같은 로그를 케이스 단위로 다시 읽어 아래 표를 `results/<bench>_<model>_<suite>_<attacks>_<date>.md`로 만듭니다 (케이스별 분류는 `.json`으로도 저장).
+
+```bash
+ATTACK=direct scripts/run_attack.sh; ATTACK=ignore_previous scripts/run_attack.sh   # 비교할 공격 로그가 있어야 함
+SUITE=banking ATTACKS="direct ignore_previous" scripts/compare_attacks.sh
+```
+
+| 표 | 내용 | 보는 법 |
+|---|---|---|
+| 1. UT × IT 격자 | 공격별 user task × injection task 성공 여부와 두 공격의 차이 격자 | 성공이 특정 user task(예: 파일을 읽고 지시를 따르는 태스크)에 몰리는지 |
+| 2. 벡터별 ASR | 인젝션이 삽입된 위치(청구서, 집주인 공지, 거래내역 subject)별 ASR | 문서 안에서는 `TODO: ...`가 정당한 지시처럼 읽히는지 |
+| 3. injection task별 ASR | 목표 유형(소액 송금 + 정보 유출, 거액 송금, 비밀번호 변경 등)별 ASR | 어떤 목표가 정당한 작업처럼 위장되는지 |
+| 4. 행동 분류 | complied / partial / refused_explicit / ignored / broke / not_exposed / error 분포 | `ignore_previous`가 명시적 거부를 유발하는지, 유저 태스크까지 망가뜨리는지 |
+| 5. suite 교차표 | logdir 안 모든 suite의 공격별 ASR | banking에만 나타나는 패턴인지 |
+| 6. 공격 tool call 목록 | 성공·partial 케이스의 실제 tool call | 수동 검토 진입점 |
+
+`partial`(공격 tool call은 했지만 security=False) 판정은 injection task의 ground truth를 읽기 위해 agentdojo 패키지를 import합니다. venv 밖에서 돌리면 그 분류만 건너뛰고 경고를 출력합니다. `refused_explicit`는 assistant 텍스트 키워드 휴리스틱이므로 경계 케이스는 6번 표와 원본 로그로 확인하세요.
+
 ## 결과 해석
 
 | 열 | 의미 |
@@ -116,7 +136,7 @@ banking, slack, travel, workspace는 세 벤치마크에서 태스크 코드와 
 ## 레이아웃
 
 ```
-agentdojo_ollama/   러너(run.py), OllamaLLM(llm.py), 포크 감지(compat.py), 집계(summarize.py)
+agentdojo_ollama/   러너(run.py), OllamaLLM(llm.py), 포크 감지(compat.py), 집계(summarize.py), 공격 비교(compare_attacks.py)
 scripts/            Phase별 실행 스크립트 (common.sh 가 BENCH/configs/.env 를 처리)
 configs/            모델별 env, Ollama Modelfile
 patches/            AutoDojo 포크용 Ollama 패치

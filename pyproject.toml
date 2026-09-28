@@ -19,6 +19,7 @@ inspect = ["inspect-ai", "inspect-evals[agentdojo]"]
 [project.scripts]
 agentdojo-ollama = "agentdojo_ollama.run:cli"
 agentdojo-summarize = "agentdojo_ollama.summarize:main"
+agentdojo-compare = "agentdojo_ollama.compare_attacks:main"
 
 [build-system]
 requires = ["setuptools>=61"]
