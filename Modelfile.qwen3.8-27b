@@ -1,0 +1,7 @@
+# num_ctx 를 고정한 파생 태그. Ollama 서버에서:
+#   ollama create qwen3.8-27b-ctx32k -f Modelfile.qwen3.8-27b
+# 그리고 클라이언트의 OLLAMA_MODEL=qwen3.8-27b-ctx32k 로 설정한다.
+# temperature/seed 는 클라이언트가 요청마다 보내므로 num_ctx 고정이 핵심이다.
+FROM qwen3.8:27b
+PARAMETER num_ctx 32768
+PARAMETER temperature 0

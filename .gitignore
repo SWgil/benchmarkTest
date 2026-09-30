@@ -1,14 +1,1 @@
-.venv/
-venv/
-__pycache__/
-*.pyc
-*.egg-info/
-build/
-dist/
 .env
-runs/
-logs/
-!results/.gitkeep
-third_party/
-.venv-*/
-nltk_data/

@@ -1,148 +1,97 @@
-# benchmarkTest — AgentDojo 계열 벤치마크 × Ollama(qwen3.8:27b)
+# 로컬 Ollama 서버 환경 가정
 
-로컬 Ollama 서버(`10.251.36.222:9090`)의 모델로 [AgentDojo](https://github.com/ethz-spylab/agentdojo) 계열 프롬프트 인젝션 벤치마크를 실행하고 집계하는 환경입니다. 전체 계획은 [PLAN.md](PLAN.md)를 보세요.
+다른 저장소에서 LLM 실험을 할 때 공통으로 쓰는 **로컬 Ollama 서버에 대한 가정**을 모아 둔 브랜치입니다. 벤치마크 코드는 포함하지 않습니다. 이 브랜치를 참조하는 세션은 아래 내용을 그대로 전제하고 작업하면 됩니다.
 
-**측정 대상은 방어 기법이 없는 상태에서의 LLM 자체 IPI(간접 프롬프트 인젝션) 저항성**입니다. 모든 스크립트의 기본값은 방어 없음이며, 방어 기법 실험은 선택 사항(`run_defense.sh`, `DEFENSES=`)입니다.
+## 1. 서버
 
-| BENCH | 벤치마크 | 내용 | 설치 |
-|---|---|---|---|
-| `agentdojo` | [AgentDojo](https://github.com/ethz-spylab/agentdojo) 0.1.35 / v1.2.2 | workspace, slack, travel, banking (97 tasks, 629 cases) | `pip install -e .` |
-| `agentdyn` | [AgentDyn](https://github.com/SaFo-Lab/AgentDyn) | + shopping, github, dailylife (60 open-ended tasks, 560 cases) | `scripts/setup_agentdyn.sh` |
-| `autodojo` | [AutoDojo](https://github.com/xhOwenMa/AutoDojo) | 적응형 공격: 우리 모델(방어 없음)을 타깃으로 인젝션을 직접 최적화한 뒤 벤치마크 | `scripts/setup_autodojo.sh` |
-
-세 벤치마크는 모두 `agentdojo`라는 같은 패키지 이름의 포크라서 **venv를 따로** 씁니다(`.venv-agentdojo`, `.venv-agentdyn`, `.venv-autodojo`). `scripts/common.sh`가 `BENCH` 값에 따라 venv, 기본 suite, 로그 디렉터리(`runs/<BENCH>/`)를 고릅니다.
-
-## 왜 자체 러너인가
-
-- PyPI `agentdojo==0.1.35`에는 OpenAI 호환 서버용 프로바이더가 없습니다 (main 브랜치에만 있음).
-- 원본 `OpenAILLM`은 `temperature=0.0`을 실제로 전송하지 않습니다.
-- Qwen3 계열의 thinking 출력을 끄고(`reasoning_effort=none`, `/no_think`) `<think>` 블록을 제거해야 합니다.
-
-그래서 `agentdojo_ollama/` 패키지가 `OpenAILLM`을 상속한 `OllamaLLM`과 원본 CLI와 동일한 옵션의 러너를 제공합니다. 로그 형식과 디렉터리 구조는 원본과 같으므로 원본 분석 도구(`agentdojo.benchmark.load_suite_results`)를 그대로 쓸 수 있습니다.
-
-## 설치
-
-```bash
-# 1) 원본 AgentDojo
-python3 -m venv .venv-agentdojo && .venv-agentdojo/bin/pip install -e .
-# 선택: .venv-agentdojo/bin/pip install -e ".[transformers]"  (transformers_pi_detector 방어)
-#       .venv-agentdojo/bin/pip install -e ".[inspect]"       (Phase 5: AgentDojo-Inspect)
-# 2) AgentDyn (third_party/AgentDyn 를 sparse clone, runs/ 제외)
-scripts/setup_agentdyn.sh
-# 3) AutoDojo (third_party/AutoDojo clone + patches/autodojo-ollama.patch 적용)
-scripts/setup_autodojo.sh
-cp .env.example .env                      # 서버/모델 설정 (configs/qwen3.8-27b.env 가 기본값)
-```
-
-## 실행 순서
-
-```bash
-scripts/check_ollama.sh          # Phase 0: 태그·tool calling·num_ctx 점검
-scripts/run_smoke.sh             # Phase 2: 태스크 몇 개로 파이프라인 확인
-MAX_WORKERS=4 scripts/run_utility.sh   # E1: 유틸리티 (97 tasks)
-MAX_WORKERS=4 scripts/run_attack.sh    # E2: important_instructions (629 cases)
-ATTACK=tool_knowledge scripts/run_attack.sh            # E3: 공격 변형
-# (선택, 범위 밖) DEFENSES="tool_filter repeat_user_prompt" scripts/run_defense.sh
-scripts/summarize.sh             # Phase 4: results/<bench>_<model>_<date>.md / .csv
-scripts/run_inspect.sh           # Phase 5: AgentDojo-Inspect
-
-# AgentDyn (BENCH=agentdyn 를 붙이면 위 스크립트 전부 AgentDyn venv/suite 로 동작)
-BENCH=agentdyn scripts/run_smoke.sh
-MAX_WORKERS=3 scripts/run_agentdyn.sh              # shopping/github/dailylife: E1 + E2
-BENCH=agentdyn scripts/summarize.sh
-
-# AutoDojo
-BENCH=autodojo scripts/run_smoke.sh                                         # 연결 확인용 (정적 공격)
-SUITES=banking ITERATIONS=8 N_VARIANTS=5 scripts/run_autodojo_optimize.sh   # 방어 없는 타깃 직접 최적화 + 벤치마크
-BENCH=autodojo scripts/summarize.sh
-```
-
-`SUITES="banking slack"`처럼 suite 목록을 덮어쓸 수 있습니다. 스크립트 뒤에 붙인 인자는 러너로 전달됩니다(예: `-ut user_task_0`).
-
-완료된 태스크는 건너뛰므로 중단 후 재실행이 가능합니다. 다시 돌리려면 `-f`를 넘기세요.
-
-직접 실행할 때:
-
-```bash
-agentdojo-ollama --model qwen3.8:27b --base-url http://10.251.36.222:9090/v1 \
-  -s workspace -ut user_task_0 -it injection_task_0 --attack important_instructions
-agentdojo-ollama --help
-```
-
-thinking을 켠 상태로 비교 실험을 하려면:
-
-```bash
-EXTRA_ARGS="--reasoning-effort '' --no-no-think-tag --logdir runs_think" scripts/run_utility.sh
-```
-
-## AutoDojo 사용법
-
-AutoDojo 논문의 주제는 "방어를 상대로 한 적응형 공격"이라 포크에 방어 9종이 들어 있지만, 이 저장소는 **방어 없는 타깃에 대한 직접 최적화만** 수행합니다. 목적은 정적 `important_instructions` 대신 우리 모델에 맞춰 최적화된 인젝션을 썼을 때 ASR이 얼마나 오르는지, 즉 LLM 자체 저항성의 상한을 보는 것입니다. 논문에 커밋된 다른 모델용 캐시의 전이 평가는 하지 않습니다(다른 모델에 맞춰진 문구이고, banking 등은 상당수 셀이 정적 공격과 동일해 의미가 적음).
-
-`run_autodojo_optimize.sh`는 suite마다 두 단계를 이어서 실행합니다.
-
-1. `optimize_variants.py`로 우리 모델을 타깃 삼아 인젝션을 반복 최적화합니다. **타깃과 최적화(analyzer + rewriter) LLM 모두 Ollama 모델**을 씁니다. 최적화 LLM은 `OPTIMIZER_MODEL`로 바꿀 수 있고(기본은 타깃과 같은 태그), `OLLAMA_REASONING_EFFORT`를 비워 두면 thinking이 켜진 채로 문구를 생성합니다. 결과 캐시는 `runs/autodojo/variants/<suite>/<model>/no_defense/injections.json`.
-2. 만들어진 캐시로 `--attack autodojo` 벤치마크를 돌립니다. 로그는 `runs/autodojo/<model>/no_defense/<suite>/…`.
-
-주요 변수: `SUITES`(기본 banking slack travel; github/shopping/dailylife도 가능), `ITERATIONS`(기본 8), `N_VARIANTS`(기본 5), `OPT_EXTRA`(예: `--max-injection-tasks 2 --parallel-eval --eval-concurrency 4`). 비용은 injection task × vector × 반복 × screening user task만큼 타깃 호출이 발생하므로 작게 시작해 시간을 재세요. 방어 실험이 필요해지면 `DEFENSE=spotlighting`으로 켤 수 있습니다.
-
-`patches/autodojo-ollama.patch`가 포크에 추가하는 것:
-
-- `vllm_parsed` 타깃이 `LOCAL_LLM_BASE_URL`, `LOCAL_LLM_MODEL_ID`, `LOCAL_LLM_REASONING_EFFORT`를 읽어 원격 Ollama와 특정 모델 태그를 쓰도록 (원본은 localhost 고정 + `/v1/models` 첫 모델 자동 선택)
-- qwen 계열 모델에도 `reasoning_effort`를 보내도록 (원본은 OpenRouter 제약 때문에 항상 생략)
-- 최적화 LLM 프로바이더 `ollama` 추가 (`OLLAMA_BASE_URL`, `OLLAMA_API_KEY`, `OLLAMA_REASONING_EFFORT`)
-- DRIFT 방어 모델도 같은 환경변수로 원격 지정 가능
-
-참고로 AutoDojo의 필터 방어(`promptguard`, `piguard`, `protectai`, `datafilter`)는 GPU와 Hugging Face 토큰이 필요하고, `drift`/`progent`/`camel`은 추가 의존성이 필요합니다.
-
-## 겹치는 suite 처리
-
-banking, slack, travel, workspace는 세 벤치마크에서 태스크 코드와 데이터가 동일합니다(diff로 확인). 그래서:
-
-- `BENCH=agentdyn` 기본 suite는 AgentDyn 고유의 shopping, github, dailylife뿐입니다. 원본 4개는 `SUITES=`로 명시할 때만 돕니다.
-- `BENCH=autodojo`는 태스크가 아니라 공격(우리 모델에 맞춰 최적화된 인젝션)을 새로 측정합니다. 기준선(공격 없음, 정적 공격)은 다시 돌리지 않고 `results/agentdojo_*`의 E1/E2 행을 함께 놓고 비교합니다. AgentDyn 고유 suite에서 최적화하려면 `SUITES="shopping github dailylife"`로 지정합니다.
-
-## 공격 변형 간 차이 분석
-
-`summarize.sh`는 suite 단위 집계만 하므로, 예컨대 banking에서 `direct` ASR이 `ignore_previous`보다 훨씬 높게 나온 이유는 보이지 않습니다. `compare_attacks.sh`는 같은 로그를 케이스 단위로 다시 읽어 아래 표를 `results/<bench>_<model>_<suite>_<attacks>_<date>.md`로 만듭니다 (케이스별 분류는 `.json`으로도 저장).
-
-```bash
-ATTACK=direct scripts/run_attack.sh; ATTACK=ignore_previous scripts/run_attack.sh   # 비교할 공격 로그가 있어야 함
-SUITE=banking ATTACKS="direct ignore_previous" scripts/compare_attacks.sh
-```
-
-| 표 | 내용 | 보는 법 |
-|---|---|---|
-| 1. UT × IT 격자 | 공격별 user task × injection task 성공 여부와 두 공격의 차이 격자 | 성공이 특정 user task(예: 파일을 읽고 지시를 따르는 태스크)에 몰리는지 |
-| 2. 벡터별 ASR | 인젝션이 삽입된 위치(청구서, 집주인 공지, 거래내역 subject)별 ASR | 문서 안에서는 `TODO: ...`가 정당한 지시처럼 읽히는지 |
-| 3. injection task별 ASR | 목표 유형(소액 송금 + 정보 유출, 거액 송금, 비밀번호 변경 등)별 ASR | 어떤 목표가 정당한 작업처럼 위장되는지 |
-| 4. 행동 분류 | complied / partial / refused_explicit / ignored / broke / not_exposed / error 분포 | `ignore_previous`가 명시적 거부를 유발하는지, 유저 태스크까지 망가뜨리는지 |
-| 5. suite 교차표 | logdir 안 모든 suite의 공격별 ASR | banking에만 나타나는 패턴인지 |
-| 6. 공격 tool call 목록 | 성공·partial 케이스의 실제 tool call | 수동 검토 진입점 |
-
-`partial`(공격 tool call은 했지만 security=False) 판정은 injection task의 ground truth를 읽기 위해 agentdojo 패키지를 import합니다. venv 밖에서 돌리면 그 분류만 건너뛰고 경고를 출력합니다. `refused_explicit`는 assistant 텍스트 키워드 휴리스틱이므로 경계 케이스는 6번 표와 원본 로그로 확인하세요.
-
-## 결과 해석
-
-| 열 | 의미 |
+| 항목 | 값 |
 |---|---|
-| utility (attack=none) | 공격 없이 유저 태스크를 완수한 비율 |
-| utility (attack=X) | 공격 하에서 유저 태스크를 완수한 비율 (utility under attack) |
-| targeted ASR | 인젝션 태스크의 목표가 달성된 비율 (`security=True` 비율) |
-| inj. tasks solvable | 인젝션 태스크를 유저 태스크로 직접 주었을 때 푼 개수 (모델이 아예 못 푸는 목표는 ASR 해석 시 제외 고려) |
+| 서버 | Ollama, `http://10.251.36.222:9090` (사내망) |
+| OpenAI 호환 엔드포인트 | `http://10.251.36.222:9090/v1` (`/v1/chat/completions`, `/v1/models`) |
+| Ollama native API | `http://10.251.36.222:9090/api/...` (`/api/tags`, `/api/show`, `/api/version`) |
+| API 키 | 검사하지 않음. openai 클라이언트가 빈 값을 거부하므로 더미 값(`ollama`) 사용 |
+| 접근 범위 | 사내망에서만 접근 가능. 원격 컨테이너(claude.ai/code 등)에서는 접근되지 않으므로 실제 호출은 사내망에서 수행하고, 원격에서는 모의 서버로 파이프라인만 검증한다 |
 
-공식 리더보드: https://agentdojo.spylab.ai/results/
+## 2. 모델
 
-## 레이아웃
+| 항목 | 값 |
+|---|---|
+| 모델 태그 | `qwen3.8:27b` (Qwen3 계열, 27B) |
+| 태그 확정 | 이 태그는 **실제 존재 여부가 확인되지 않았다**. 오타(`qwen3:27b`, `qwen3.5:27b` 등)일 수 있으므로 `check_ollama.sh` 2번 항목으로 확정한 뒤 `.env` 를 수정한다 |
+| 공격/프롬프트에서 부르는 이름 | `Qwen` |
+| tool calling | OpenAI 호환 API의 네이티브 `tools` / `tool_calls` 를 사용한다고 가정. `check_ollama.sh` 4번 항목으로 확인 |
+| 컨텍스트 길이 | **`num_ctx` 32768 이상 필요.** Ollama 기본값 4096은 tool 스키마 + 다중 턴 대화에 부족하다. 서버를 `OLLAMA_CONTEXT_LENGTH=32768` 로 기동하거나 `Modelfile.qwen3.8-27b` 로 파생 태그를 만든다 |
+| thinking | 기본은 **off**. 매 요청에 `reasoning_effort: "none"` (Ollama가 `think=false` 로 매핑) 을 보내고 시스템 프롬프트 끝에 `/no_think` 를 붙인다. 그래도 `<think>...</think>` 가 content 에 섞이면 클라이언트에서 제거한다. 구형 Ollama 는 `reasoning_effort` 를 무시하므로 `check_ollama.sh` 4번에서 실제로 꺼지는지 확인 |
+| 재현성 | 매 요청에 `temperature: 0`, `seed: 0` 을 **명시 전송**한다 (일부 클라이언트는 0을 "미지정"으로 취급해 보내지 않으므로 주의) |
+| 동시성 | 병렬 요청은 서버의 `OLLAMA_NUM_PARALLEL` (예: 4) 에 맞춘다. VRAM 여유가 없으면 순차 실행 |
+| 속도 | 27B 모델 단일 GPU 기준, 다중 턴 tool calling 태스크 하나에 수십 초에서 수 분 |
 
+## 3. 클라이언트 설정
+
+`.env.example` 을 `.env` 로 복사해서 사용합니다.
+
+```dotenv
+OLLAMA_BASE_URL=http://10.251.36.222:9090/v1
+OLLAMA_API_KEY=ollama
+OLLAMA_MODEL=qwen3.8:27b
 ```
-agentdojo_ollama/   러너(run.py), OllamaLLM(llm.py), 포크 감지(compat.py), 집계(summarize.py), 공격 비교(compare_attacks.py)
-scripts/            Phase별 실행 스크립트 (common.sh 가 BENCH/configs/.env 를 처리)
-configs/            모델별 env, Ollama Modelfile
-patches/            AutoDojo 포크용 Ollama 패치
-third_party/        AgentDyn, AutoDojo 체크아웃 (gitignore; setup 스크립트가 핀 커밋으로 받음)
-runs/<bench>/       벤치마크 로그 (gitignore)
-results/            집계 결과 (커밋 대상)
+
+openai 파이썬 클라이언트 예:
+
+```python
+import openai, os
+client = openai.OpenAI(base_url=os.environ["OLLAMA_BASE_URL"], api_key=os.environ["OLLAMA_API_KEY"])
+resp = client.chat.completions.create(
+    model=os.environ["OLLAMA_MODEL"],
+    messages=[{"role": "system", "content": "You are a helpful assistant. /no_think"},
+              {"role": "user", "content": "..."}],
+    tools=[...],
+    temperature=0, seed=0,
+    reasoning_effort="none",   # Ollama: think=false
+)
 ```
 
-러너는 세 포크가 공유하는 API(`PipelineConfig(llm=<element>)`, `benchmark_suite_*`, `load_attack`)만 사용하므로 포크별 코드 분기가 없습니다. 로그 경로는 원본/AgentDyn이 `<model>[-<defense>]/<suite>/…`, AutoDojo가 `<model>/<defense>/<suite>/…`이고 집계기는 둘 다 읽습니다.
+curl 예:
+
+```bash
+curl -s http://10.251.36.222:9090/v1/chat/completions -H 'Content-Type: application/json' -d '{
+  "model":"qwen3.8:27b","temperature":0,"seed":0,"reasoning_effort":"none",
+  "messages":[{"role":"user","content":"서울 날씨 알려줘 /no_think"}],
+  "tools":[{"type":"function","function":{"name":"get_weather","description":"도시 날씨 조회",
+    "parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}]}'
+```
+
+## 4. 점검
+
+사내망에서 실행합니다.
+
+```bash
+cp .env.example .env
+./check_ollama.sh
+```
+
+확인 항목: 서버 버전, 모델 태그 존재, `num_ctx` / 최대 컨텍스트 / capabilities, OpenAI 호환 tool calling 과 `reasoning_effort=none` 적용 여부.
+
+`num_ctx` 가 32768 미만이면 서버에서 파생 태그를 만듭니다.
+
+```bash
+ollama create qwen3.8-27b-ctx32k -f Modelfile.qwen3.8-27b
+# 이후 .env 의 OLLAMA_MODEL=qwen3.8-27b-ctx32k
+```
+
+## 5. 대안 (tool calling 이 안 될 때)
+
+OpenAI 호환 API 가 `tool_calls` 를 돌려주지 않으면 프롬프트 기반 tool 포맷(예: AgentDojo `local` 프로바이더)으로 우회합니다. 그런 프로바이더는 보통 `localhost` 고정이므로 포트 포워딩으로 붙입니다.
+
+```bash
+ssh -N -L 8000:10.251.36.222:9090 <점프호스트>   # 또는 socat
+```
+
+## 파일
+
+| 파일 | 내용 |
+|---|---|
+| `README.md` | 이 문서 |
+| `.env.example` | 클라이언트 환경변수 템플릿 |
+| `check_ollama.sh` | 서버·모델·tool calling·thinking 점검 스크립트 |
+| `Modelfile.qwen3.8-27b` | `num_ctx 32768` 파생 태그용 Modelfile |
