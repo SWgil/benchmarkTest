@@ -52,9 +52,9 @@ MAX_WORKERS=3 scripts/run_agentdyn.sh              # shopping/github/dailylife: 
 BENCH=agentdyn scripts/summarize.sh
 
 # AutoDojo
-BENCH=autodojo scripts/run_smoke.sh                                         # 연결 확인용 (정적 공격)
-SUITES=banking ITERATIONS=8 N_VARIANTS=5 scripts/run_autodojo_optimize.sh   # 방어 없는 타깃 직접 최적화 + 벤치마크
-BENCH=autodojo scripts/summarize.sh
+BENCH=autodojo scripts/run_smoke.sh                                          # 연결 확인용 (정적 공격)
+SUITES=banking ITERATIONS=16 N_VARIANTS=8 scripts/run_autodojo_optimize.sh   # 방어 없는 타깃 직접 최적화 + 변형 스윕 벤치마크
+BENCH=autodojo scripts/summarize.sh                                          # 변형별(v0,v1,…) ASR; best-of 는 results/autodojo_*_bestof_*.md
 ```
 
 `SUITES="banking slack"`처럼 suite 목록을 덮어쓸 수 있습니다. 스크립트 뒤에 붙인 인자는 러너로 전달됩니다(예: `-ut user_task_0`).
@@ -82,13 +82,22 @@ AutoDojo 논문의 주제는 "방어를 상대로 한 적응형 공격"이라 �
 `run_autodojo_optimize.sh`는 suite마다 두 단계를 이어서 실행합니다.
 
 1. `optimize_variants.py`로 우리 모델을 타깃 삼아 인젝션을 반복 최적화합니다. **타깃과 최적화(analyzer + rewriter) LLM 모두 Ollama 모델**을 씁니다. 최적화 LLM은 `OPTIMIZER_MODEL`로 바꿀 수 있고(기본은 타깃과 같은 태그), `OLLAMA_REASONING_EFFORT`를 비워 두면 thinking이 켜진 채로 문구를 생성합니다. 결과 캐시는 `runs/autodojo/variants/<suite>/<model>/no_defense/injections.json`.
+
+   **측정 정확성(최적화 타깃 = 벤치마크 타깃)**: 최적화 단계의 타깃이 벤치마크 러너와 조금이라도 다르면 ASR이 과소평가됩니다. 그래서 `run_autodojo_optimize.sh`는 (a) 패치된 `get_llm`을 통해 `vllm_parsed` 타깃을 `OllamaLLM`으로 라우팅해 `<think>` 블록을 제거하고 `seed`(`LOCAL_LLM_SEED`, 기본 0)를 보내며, (b) 타깃 시스템 메시지에 `/no_think`(`LOCAL_LLM_SYSTEM_SUFFIX`)를 붙이고, (c) `important_instructions` 시드가 모델을 벤치마크와 같은 이름(`AUTODOJO_PROSE_NAME`, 기본 `MODEL_PROSE_NAME`=`Qwen`)으로 지칭하도록 맞춥니다. `reasoning_effort=none`이 실제로 thinking을 끄는지는 `check_ollama.sh`로 먼저 확인하세요.
 2. 만들어진 캐시로 `--attack autodojo` 벤치마크를 돌립니다. 로그는 `runs/autodojo/<model>/no_defense/<suite>/…`.
 
-주요 변수: `SUITES`(기본 banking slack travel; github/shopping/dailylife도 가능), `ITERATIONS`(기본 8), `N_VARIANTS`(기본 5), `OPT_EXTRA`(예: `--max-injection-tasks 2 --parallel-eval --eval-concurrency 4`). 비용은 injection task × vector × 반복 × screening user task만큼 타깃 호출이 발생하므로 작게 시작해 시간을 재세요. 방어 실험이 필요해지면 `DEFENSE=spotlighting`으로 켤 수 있습니다.
+주요 변수: `SUITES`(기본 banking slack travel; github/shopping/dailylife도 가능), `ITERATIONS`(기본 16), `N_VARIANTS`(기본 8), `SEED_STYLES`(미지정 시 suite별 자동: banking/slack/travel→`rlhammer topicattack`, shopping/github/dailylife→`procedural`), `BENCH_VARIANTS`(기본 `0 1 2`), `OPT_EXTRA`(예: `--max-injection-tasks 2 --parallel-eval --eval-concurrency 4`). 비용은 injection task × vector × 반복 × screening user task만큼 타깃 호출이 발생하므로 작게 시작해 시간을 재세요. 방어 실험이 필요해지면 `DEFENSE=spotlighting`으로 켤 수 있습니다.
+
+**변형 스윕과 best-of ASR**: 최적화기는 (injection_task, vector)마다 상위 `N_VARIANTS`개를 남기는데, 변형 0은 스크리닝 평균 1위일 뿐 특정 케이스에서는 하위 변형이 이깁니다. `BENCH_VARIANTS`의 각 변형을 별도 로그 디렉터리 `runs/autodojo/v<k>/…`로 벤치마크하고, `agentdojo-autodojo-aggregate`가 케이스별 `security`를 OR로 합쳐 best-of ASR 표(`results/autodojo_<model>_bestof_<date>.md`)를 만듭니다. 이것이 "모델에 맞춰 최적화된 공격의 ASR 상한"에 가장 가까운 값입니다. 변형 수만큼 벤치마크 비용이 늘어나므로(기본 3배) 단일 변형만 보려면 `BENCH_VARIANTS=0`.
+
+**컨텍스트 길이 주의**: 최적화된 인젝션은 정적 공격보다 길어서, 서버 `num_ctx`가 작으면 tool 스키마·다중 턴과 합쳐져 인젝션 문구 자체가 잘리고 ASR이 구조적으로 붕괴합니다. `configs/Modelfile.qwen3.8-27b`의 `num_ctx 32768` 파생 태그를 만들어 `OLLAMA_MODEL`로 쓰세요.
 
 `patches/autodojo-ollama.patch`가 포크에 추가하는 것:
 
 - `vllm_parsed` 타깃이 `LOCAL_LLM_BASE_URL`, `LOCAL_LLM_MODEL_ID`, `LOCAL_LLM_REASONING_EFFORT`를 읽어 원격 Ollama와 특정 모델 태그를 쓰도록 (원본은 localhost 고정 + `/v1/models` 첫 모델 자동 선택)
+- `vllm_parsed` 타깃을 `agentdojo_ollama.OllamaLLM`으로 라우팅해 벤치마크 러너와 동일하게 `<think>` 제거 + `seed`(`LOCAL_LLM_SEED`) 전송 (import 실패 시 기존 `OpenAILLM`으로 폴백)
+- 타깃 시스템 메시지에 `LOCAL_LLM_SYSTEM_SUFFIX`(예: ` /no_think`)를 붙여 thinking 억제를 벤치마크와 일치
+- `important_instructions` 시드의 모델 지칭 이름을 `AUTODOJO_PROSE_NAME`/`MODEL_PROSE_NAME`로 고정 (원본은 `vllm_parsed`가 항상 "Local model"로 해석되어 벤치마크의 "Qwen"과 불일치)
 - qwen 계열 모델에도 `reasoning_effort`를 보내도록 (원본은 OpenRouter 제약 때문에 항상 생략)
 - 최적화 LLM 프로바이더 `ollama` 추가 (`OLLAMA_BASE_URL`, `OLLAMA_API_KEY`, `OLLAMA_REASONING_EFFORT`)
 - DRIFT 방어 모델도 같은 환경변수로 원격 지정 가능
@@ -145,4 +154,4 @@ runs/<bench>/       벤치마크 로그 (gitignore)
 results/            집계 결과 (커밋 대상)
 ```
 
-러너는 세 포크가 공유하는 API(`PipelineConfig(llm=<element>)`, `benchmark_suite_*`, `load_attack`)만 사용하므로 포크별 코드 분기가 없습니다. 로그 경로는 원본/AgentDyn이 `<model>[-<defense>]/<suite>/…`, AutoDojo가 `<model>/<defense>/<suite>/…`이고 집계기는 둘 다 읽습니다.
+러너는 세 포크가 공유하는 API(`PipelineConfig(llm=<element>)`, `benchmark_suite_*`, `load_attack`)만 사용하므로 포크별 코드 분기가 없습니다. 로그 경로는 원본/AgentDyn이 `<model>[-<defense>]/<suite>/…`, AutoDojo가 `<model>/<defense>/<suite>/…`(변형 스윕 시 `v<k>/`가 앞에 붙음)이고 집계기는 둘 다 읽습니다.

@@ -1,13 +1,28 @@
 diff --git a/agentdojo/src/agentdojo/agent_pipeline/agent_pipeline.py b/agentdojo/src/agentdojo/agent_pipeline/agent_pipeline.py
-index 927a956..953a84e 100644
+index 927a956..213fced 100644
 --- a/agentdojo/src/agentdojo/agent_pipeline/agent_pipeline.py
 +++ b/agentdojo/src/agentdojo/agent_pipeline/agent_pipeline.py
-@@ -123,8 +123,27 @@ def load_system_message(system_message_name: str | None) -> str:
-     return system_messages.get(system_message_name, system_messages["default"])
- 
- 
+@@ -120,11 +120,39 @@ def load_system_message(system_message_name: str | None) -> str:
+     path = package_files / "data" / "system_messages.yaml"
+     with importlib.resources.as_file(path) as p, p.open() as f:
+         system_messages = yaml.safe_load(f)
+-    return system_messages.get(system_message_name, system_messages["default"])
+-
+-
 -def _get_local_model_id(port) -> str:
 -    url = f"http://localhost:{port}/v1/models"
++    message = system_messages.get(system_message_name, system_messages["default"])
++    # Keep the AutoDojo optimization target's system message identical to the
++    # benchmark runner's (agentdojo_ollama.run appends this Qwen3 soft switch).
++    # Otherwise the optimizer tunes injections against a thinking-ON target while
++    # the benchmark measures a thinking-OFF one, depressing measured ASR. Gated on
++    # LOCAL_LLM_SYSTEM_SUFFIX so it only fires when the runner opts in.
++    suffix = os.getenv("LOCAL_LLM_SYSTEM_SUFFIX")
++    if suffix:
++        message = message.rstrip() + suffix
++    return message
++
++
 +def _local_llm_base_url(port_env: str = "LOCAL_LLM_PORT", default_port: int = 8000) -> str:
 +    """Base URL of the local OpenAI-compatible target server.
 +
@@ -32,7 +47,7 @@ index 927a956..953a84e 100644
      response = requests.get(url)
      response.raise_for_status()
      data = response.json()
-@@ -135,13 +154,19 @@ def _get_local_model_id(port) -> str:
+@@ -135,13 +163,38 @@ def _get_local_model_id(port) -> str:
  
  def get_llm(model: str) -> BasePipelineElement:
      if model.lower() == "vllm_parsed":
@@ -52,7 +67,26 @@ index 927a956..953a84e 100644
          )
 -        llm = OpenAILLM(client, _get_local_model_id(port))
 +        reasoning_effort = os.getenv("LOCAL_LLM_REASONING_EFFORT") or None
-+        llm = OpenAILLM(client, _get_local_model_id(port, base_url), reasoning_effort=reasoning_effort)  # type: ignore[arg-type]
++        model_id = _get_local_model_id(port, base_url)
++        # Prefer agentdojo_ollama.OllamaLLM for the local target so the optimization
++        # target behaves EXACTLY like the benchmark runner: it strips <think> blocks
++        # from the response, sends a fixed seed, and sends reasoning_effort explicitly.
++        # Without this the optimizer hill-climbs against a subtly different target
++        # (thinking leakage, no seed) than the one the final ASR is measured on.
++        # Falls back to the plain OpenAILLM if the runner package is unavailable.
++        try:
++            from agentdojo_ollama.llm import OllamaLLM
++
++            seed_env = os.getenv("LOCAL_LLM_SEED", "0")
++            seed = None if str(seed_env).strip() in ("", "-1") else int(seed_env)
++            llm = OllamaLLM(
++                client,
++                model_id,
++                reasoning_effort=reasoning_effort,
++                seed=seed,
++            )
++        except Exception:  # pragma: no cover - fork used without the runner installed
++            llm = OpenAILLM(client, model_id, reasoning_effort=reasoning_effort)  # type: ignore[arg-type]
      elif model.startswith("gemini"):
          # Native Google Gemini API (AI Studio key), NOT OpenRouter.
          from google import genai
@@ -139,3 +173,25 @@ index 7e88aed..a8d0c31 100644
                  messages=messages,
                  temperature=temperature,
                  max_tokens=max_tokens,
+diff --git a/agentdojo/variant_generation/optimize_variants.py b/agentdojo/variant_generation/optimize_variants.py
+index 44e23f7..fe87eed 100644
+--- a/agentdojo/variant_generation/optimize_variants.py
++++ b/agentdojo/variant_generation/optimize_variants.py
+@@ -1489,7 +1489,16 @@ def main() -> None:
+         # ── Resolve model name for the important_instructions wrapper seed ───
+         # Prefer the pipeline's canonical model name (matches what the static
+         # attack uses at runtime); fall back to CLI args when ASR eval is off.
+-        if evaluator is not None:
++        # An explicit prose name (AUTODOJO_PROSE_NAME / MODEL_PROSE_NAME) wins so the
++        # important_instructions seed addresses the target by the SAME name the
++        # benchmark uses (e.g. "Qwen"). For the vllm_parsed target the pipeline name
++        # always contains the "vllm_parsed" substring, so get_model_name_from_pipeline
++        # resolves to the generic "Local model" — a train/test mismatch with the
++        # benchmark, where agentdojo_ollama.run registers the real prose name.
++        env_prose = os.environ.get("AUTODOJO_PROSE_NAME") or os.environ.get("MODEL_PROSE_NAME")
++        if env_prose:
++            wrapper_model_name = env_prose
++        elif evaluator is not None:
+             from agentdojo.attacks.base_attacks import get_model_name_from_pipeline
+             wrapper_model_name = get_model_name_from_pipeline(evaluator.pipeline)
+         else:

@@ -212,6 +212,7 @@ ATTACK=tool_knowledge MAX_WORKERS=4 scripts/run_attack.sh # E3
 - **AgentDyn**: `scripts/run_agentdyn.sh`가 shopping/github/dailylife에 대해 E1 + E2를 돌린다. camel/drift/progent 등 추가 방어는 OpenAI/Google 클라이언트를 직접 요구해 1차 범위에서 제외.
 - **AutoDojo 범위**: 포크에는 방어 9종이 있지만 이 저장소는 방어 없는 타깃에 대한 **직접 최적화만** 수행한다. 정적 공격 대비 최적화된 공격에서 ASR이 얼마나 오르는지(LLM 자체 저항성의 상한)를 본다. 논문 캐시 전이 평가는 제외했다(다른 모델용 문구이고 banking은 대부분 셀이 정적 공격과 동일).
 - **AutoDojo 직접 최적화**: `scripts/run_autodojo_optimize.sh`가 `optimize_variants.py`를 타깃 = Ollama 모델, 최적화 LLM = Ollama 모델(`OPTIMIZER_MODEL`, 기본 동일 태그)로 실행하고 생성된 캐시로 벤치마크한다. 이를 위해 `patches/autodojo-ollama.patch`로 (a) `vllm_parsed` 타깃의 base URL/모델 태그/reasoning_effort 환경변수화, (b) qwen 모델에도 reasoning_effort 전송, (c) 최적화 LLM 프로바이더 `ollama` 추가, (d) DRIFT 방어 모델 원격 지정을 넣었다.
+- **ASR 상한 조이기 (측정 정확성 + 강도)**: 최적화 타깃과 벤치마크 타깃을 일치시킨다 — 패치가 `vllm_parsed`를 `OllamaLLM`으로 라우팅해 `<think>` 제거 + `seed` 전송, 시스템 메시지에 `/no_think`(`LOCAL_LLM_SYSTEM_SUFFIX`), 시드 모델명을 `AUTODOJO_PROSE_NAME`로 고정. 강도 knob은 기본 `ITERATIONS=16`, `N_VARIANTS=8`, suite별 자동 시드 스타일, 그리고 `BENCH_VARIANTS`로 변형을 스윕해 `agentdojo-autodojo-aggregate`가 케이스별 best-of ASR을 집계한다. 최적화 LLM 교체는 자원 제약으로 범위 밖.
 - 검증: 모의 Ollama 서버로 AgentDyn 3 suite 실행, AutoDojo 캐시 공격·방어 실행, 최적화 1회 반복(타깃 160회 tool-calling 요청 + 최적화 LLM 8회 텍스트 요청, 모두 `reasoning_effort=none`/명시 temperature) → 캐시 생성 → 벤치마크까지 확인.
 - 실행 비용 주의: 2단계는 (injection task × vector × iteration × screening user task) 만큼 타깃 호출이 발생한다. 27B 모델 단일 GPU에서는 `--max-injection-tasks`, `ITERATIONS`, `N_VARIANTS`를 줄여 먼저 시간을 잰다.
 
