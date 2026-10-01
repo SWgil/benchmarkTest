@@ -122,6 +122,27 @@ SUITE=banking ATTACKS="direct ignore_previous" scripts/compare_attacks.sh
 
 `partial`(공격 tool call은 했지만 security=False) 판정은 injection task의 ground truth를 읽기 위해 agentdojo 패키지를 import합니다. venv 밖에서 돌리면 그 분류만 건너뛰고 경고를 출력합니다. `refused_explicit`는 assistant 텍스트 키워드 휴리스틱이므로 경계 케이스는 6번 표와 원본 로그로 확인하세요.
 
+## 태스크별 공격 성공 / utility 표
+
+attack type과 suite를 하나씩 지정하면 그 조합의 **모든 user task × injection task** 결과를 격자로 펼쳐
+`results/<bench>_<model>_<suite>_<attack>_tasks_<date>.md`로 저장합니다. agentdojo 패키지를 import하지 않으므로 venv 밖에서 `python -m agentdojo_ollama.task_table`로도 돌릴 수 있습니다.
+
+```bash
+SUITE=banking ATTACK=important_instructions scripts/task_table.sh
+# 또는 직접
+agentdojo-task-table --logdir runs/agentdojo -s banking -a important_instructions --out results/banking_important_instructions.md
+```
+
+| 표 | 내용 |
+|---|---|
+| 요약 | user/injection task 수, 케이스 수, targeted ASR, utility under attack, 둘 다 성공한 비율, 오류 수 |
+| 1. 공격 성공 격자 | user task(행) × injection task(열), `security=True`면 ✓. 행마다 ASR, 마지막 행은 injection task별 ASR |
+| 2. utility 성공 격자 | 같은 격자에서 `utility=True`면 ✓ (utility under attack) |
+| 3. 케이스 목록 | 모든 (user task, injection task) 행과 공격·utility 성공 여부, error 메시지 |
+| 4. injection task 단독 실행 | injection task를 유저 태스크로 직접 주었을 때의 utility (해당 로그가 있을 때만) |
+
+셀 기호: ✓ 성공, ✗ 실패, ! 실행 오류, 빈칸 = 로그 없음. logdir에 pipeline(모델/방어 조합)이 여러 개면 pipeline별 섹션으로 나뉘고, `PIPELINE=` (`-p`)로 하나만 고를 수 있습니다.
+
 ## 결과 해석
 
 | 열 | 의미 |
@@ -136,7 +157,7 @@ SUITE=banking ATTACKS="direct ignore_previous" scripts/compare_attacks.sh
 ## 레이아웃
 
 ```
-agentdojo_ollama/   러너(run.py), OllamaLLM(llm.py), 포크 감지(compat.py), 집계(summarize.py), 공격 비교(compare_attacks.py)
+agentdojo_ollama/   러너(run.py), OllamaLLM(llm.py), 포크 감지(compat.py), 집계(summarize.py), 공격 비교(compare_attacks.py), 태스크별 표(task_table.py)
 scripts/            Phase별 실행 스크립트 (common.sh 가 BENCH/configs/.env 를 처리)
 configs/            모델별 env, Ollama Modelfile
 patches/            AutoDojo 포크용 Ollama 패치
