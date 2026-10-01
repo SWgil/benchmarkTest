@@ -9,8 +9,9 @@
 | `agentdojo` | [AgentDojo](https://github.com/ethz-spylab/agentdojo) 0.1.35 / v1.2.2 | workspace, slack, travel, banking (97 tasks, 629 cases) | `pip install -e .` |
 | `agentdyn` | [AgentDyn](https://github.com/SaFo-Lab/AgentDyn) | + shopping, github, dailylife (60 open-ended tasks, 560 cases) | `scripts/setup_agentdyn.sh` |
 | `autodojo` | [AutoDojo](https://github.com/xhOwenMa/AutoDojo) | 적응형 공격: 우리 모델(방어 없음)을 타깃으로 인젝션을 직접 최적화한 뒤 벤치마크 | `scripts/setup_autodojo.sh` |
+| (BENCH 아님) | [PIArena](https://github.com/sleeepeer/PIArena) | **비-에이전트** 정적 데이터셋 13종(QA/RAG/요약/롱컨텍스트, 1,700 샘플). AgentDojo/AgentDyn·적응형 공격 제외 | `scripts/setup_piarena.sh` → `scripts/run_piarena.sh` |
 
-세 벤치마크는 모두 `agentdojo`라는 같은 패키지 이름의 포크라서 **venv를 따로** 씁니다(`.venv-agentdojo`, `.venv-agentdyn`, `.venv-autodojo`). `scripts/common.sh`가 `BENCH` 값에 따라 venv, 기본 suite, 로그 디렉터리(`runs/<BENCH>/`)를 고릅니다.
+위 세 벤치마크는 모두 `agentdojo`라는 같은 패키지 이름의 포크라서 **venv를 따로** 씁니다(`.venv-agentdojo`, `.venv-agentdyn`, `.venv-autodojo`). `scripts/common.sh`가 `BENCH` 값에 따라 venv, 기본 suite, 로그 디렉터리(`runs/<BENCH>/`)를 고릅니다. PIArena는 포크가 아니라 자체 `main.py`를 쓰는 독립 플랫폼이라 `BENCH` 스위치를 거치지 않고 `.venv-piarena` + `scripts/run_piarena.sh`로 따로 돕니다.
 
 ## 왜 자체 러너인가
 
@@ -31,6 +32,8 @@ python3 -m venv .venv-agentdojo && .venv-agentdojo/bin/pip install -e .
 scripts/setup_agentdyn.sh
 # 3) AutoDojo (third_party/AutoDojo clone + patches/autodojo-ollama.patch 적용)
 scripts/setup_autodojo.sh
+# 4) PIArena 비-에이전트 정적 평가 (third_party/PIArena clone + patches/piarena-ollama.patch 적용)
+scripts/setup_piarena.sh
 cp .env.example .env                      # 서버/모델 설정 (configs/qwen3.8-27b.env 가 기본값)
 ```
 
@@ -55,6 +58,10 @@ BENCH=agentdyn scripts/summarize.sh
 BENCH=autodojo scripts/run_smoke.sh                                         # 연결 확인용 (정적 공격)
 SUITES=banking ITERATIONS=8 N_VARIANTS=5 scripts/run_autodojo_optimize.sh   # 방어 없는 타깃 직접 최적화 + 벤치마크
 BENCH=autodojo scripts/summarize.sh
+
+# PIArena (비-에이전트 정적 데이터셋. AgentDojo/AgentDyn·적응형 공격은 제외)
+scripts/run_piarena.sh                                      # 13개 데이터셋 × combined 공격 × 방어 없음
+ATTACK=direct DATASETS="squad_v2 nq_rag" scripts/run_piarena.sh   # 일부만, 공격 바꿔서
 ```
 
 `SUITES="banking slack"`처럼 suite 목록을 덮어쓸 수 있습니다. 스크립트 뒤에 붙인 인자는 러너로 전달됩니다(예: `-ut user_task_0`).
@@ -94,6 +101,33 @@ AutoDojo 논문의 주제는 "방어를 상대로 한 적응형 공격"이라 �
 - DRIFT 방어 모델도 같은 환경변수로 원격 지정 가능
 
 참고로 AutoDojo의 필터 방어(`promptguard`, `piguard`, `protectai`, `datafilter`)는 GPU와 Hugging Face 토큰이 필요하고, `drift`/`progent`/`camel`은 추가 의존성이 필요합니다.
+
+## PIArena 사용법 (비-에이전트 정적 평가)
+
+PIArena(sleeepeer/PIArena, ACL 2026)는 QA·RAG·요약·롱컨텍스트 등 **비-에이전트** 데이터셋에 대한 프롬프트 인젝션 공격/방어를 측정하는 통합 플랫폼입니다. 이 저장소는 그중 정적 데이터셋 평가(`main.py`)만 씁니다.
+
+**의도적으로 뺀 것**:
+
+- **AgentDojo / AgentDyn**: PIArena의 `main_agentdojo.py`는 기존 `BENCH=agentdojo` / `BENCH=agentdyn` 트랙과 겹치므로 호출하지 않습니다. `run_piarena.sh`는 `main.py`만 돕니다.
+- **적응형 공격**(`strategy_search`/`pair`/`tap`/`nanogcg` = `main_search.py`): 기본 범위에서 뺐습니다. 정적 결과를 본 뒤 도입을 결정합니다. `run_piarena.sh`에 이 공격 이름을 주면 거부합니다.
+
+기본 공격은 정적 `combined`(`none/direct/ignore/completion/character`도 가능), 방어는 `none`입니다. 데이터셋 13종(Table 8의 비-에이전트 세트, 1,700 샘플)은 저장소 `third_party/PIArena/datasets/*.json`에 포함돼 있어 **HuggingFace 다운로드 없이** 로컬로 로드됩니다. 각 샘플은 `target_inst / context / injected_task / target_task_answer / injected_task_answer / category` 필드를 갖습니다.
+
+```bash
+scripts/run_piarena.sh                                            # 13개 데이터셋 전부, combined, 방어 없음
+ATTACK=direct DATASETS="squad_v2 nq_rag" scripts/run_piarena.sh   # 일부 데이터셋, 공격 변경
+```
+
+주요 변수: `DATASETS`(기본 비-에이전트 13종, 파일 stem 공백 구분), `ATTACK`(정적 only), `DEFENSE`(기본 none), `NAME`, `SEED`, `REASONING_EFFORT`(기본 none=thinking off), `TEMPERATURE`(기본 0.0), `PIARENA_JUDGE_MODEL`(기본 `openai/ollama` — 심판도 같은 Ollama). 결과는 `third_party/PIArena/results/evaluation_results/<NAME>/`에 데이터셋별 JSON으로 쌓이고, 각 레코드에 utility/asr 판정이 들어갑니다.
+
+`patches/piarena-ollama.patch`가 PIArena에 추가하는 것:
+
+- `OpenAIModel`에 `base_url` / 명시 `temperature` / `reasoning_effort` / `<think>` 제거 → 원격 Ollama를 OpenAI 호환 백엔드(`backend_llm=openai/ollama`)로 사용
+- `main.py`의 GPU 강제(`assert cuda>0`)를 `PIARENA_ALLOW_NO_GPU=1`일 때 건너뜀 (원격 백엔드는 로컬 GPU 불필요)
+- 심판(`llm_judge`) 기본 모델을 `PIARENA_JUDGE_MODEL`로 지정 (기본 `openai/ollama`)
+- 방어 레지스트리를 lazy-import로 변경 → `--defense none`이 vllm/fastchat/peft/spacy 설치 없이 import됨
+
+`setup_piarena.sh`는 기본적으로 원격+정적+방어없음에 필요한 가벼운 의존성만 설치합니다(torch/transformers/openai/google-genai/anthropic/datasets 등). 로컬 HF 모델이나 PIArena 방어 10종을 쓰려면 `PIARENA_FULL_INSTALL=1 scripts/setup_piarena.sh`로 `requirements.txt` 전체(vllm 등 GPU 의존성)를 설치하세요. CPU 전용 환경이면 `PIP_TORCH_EXTRA="--index-url https://download.pytorch.org/whl/cpu"`를 함께 넘깁니다.
 
 ## 겹치는 suite 처리
 
@@ -139,8 +173,8 @@ SUITE=banking ATTACKS="direct ignore_previous" scripts/compare_attacks.sh
 agentdojo_ollama/   러너(run.py), OllamaLLM(llm.py), 포크 감지(compat.py), 집계(summarize.py), 공격 비교(compare_attacks.py)
 scripts/            Phase별 실행 스크립트 (common.sh 가 BENCH/configs/.env 를 처리)
 configs/            모델별 env, Ollama Modelfile
-patches/            AutoDojo 포크용 Ollama 패치
-third_party/        AgentDyn, AutoDojo 체크아웃 (gitignore; setup 스크립트가 핀 커밋으로 받음)
+patches/            AutoDojo 포크용 Ollama 패치, PIArena용 Ollama 패치
+third_party/        AgentDyn, AutoDojo, PIArena 체크아웃 (gitignore; setup 스크립트가 핀 커밋으로 받음)
 runs/<bench>/       벤치마크 로그 (gitignore)
 results/            집계 결과 (커밋 대상)
 ```

@@ -20,6 +20,7 @@ Ollama 서버: `http://10.251.36.222:9090`
 | AgentDojo (원본, PyPI `agentdojo` 0.1.35) | 4개 suite(workspace, slack, travel, banking), 97 user task, 27 injection task, 629 공격 케이스 | 1차 대상 |
 | AgentDyn (SaFo-Lab/AgentDyn, arXiv 2602.03117) | AgentDojo 포크. 개방형 suite 3개(shopping, github, dailylife) 60 user task, 560 케이스 추가 | 2차 대상, 구현됨 (`BENCH=agentdyn`) |
 | AutoDojo (xhOwenMa/AutoDojo, arXiv 2606.15057) | AgentDojo 포크. 공격자 LLM이 방어를 상대로 인젝션을 반복 최적화하는 적응형 공격 + 논문 캐시 | 2차 대상, 구현됨 (`BENCH=autodojo`) |
+| PIArena (sleeepeer/PIArena, ACL 2026) | 통합 프롬프트 인젝션 평가 플랫폼. 비-에이전트 정적 데이터셋 13종(QA/RAG/요약/롱컨텍스트, 1,700 샘플) + 정적/적응형 공격 + 방어 10종 | 2차 대상, **비-에이전트 정적 평가만** 구현됨 (`scripts/run_piarena.sh`). 아래 7.2 참고 |
 | AgentDojo-Inspect (UK AISI 포크) | Inspect 프레임워크 이식판, 태스크 버그 수정 + 인젝션 태스크 추가 | `inspect_evals`의 `agentdojo` 태스크 |
 | InjecAgent / ASB(Agent Security Bench) / BIPIA | 동일 주제(간접 프롬프트 인젝션)의 유사 벤치마크 | 필요 시 확장 |
 
@@ -221,6 +222,20 @@ ATTACK=tool_knowledge MAX_WORKERS=4 scripts/run_attack.sh # E3
 2. 원본 AgentDojo와 Inspect판의 태스크 차이(버그 수정, 추가 인젝션 태스크)를 결과에 분리 기록한다.
 3. 여유가 되면 InjecAgent / ASB로 동일 모델을 평가해 벤치마크 간 ASR 경향을 비교한다.
 
+### 7.3 PIArena — 비-에이전트 정적 평가 (구현됨)
+
+PIArena(sleeepeer/PIArena, ACL 2026)는 benchmark/attack/defense/evaluator 네 모듈로 이루어진 통합 플랫폼이다. 이 저장소는 그중 **비-에이전트 정적 데이터셋 평가(`main.py`)만** 쓴다.
+
+- **범위 (의도적 제외)**:
+  - **AgentDojo / AgentDyn 제외**: PIArena의 `main_agentdojo.py`는 이미 `BENCH=agentdojo` / `BENCH=agentdyn` 트랙과 겹치므로 호출하지 않는다. `scripts/run_piarena.sh`는 `main.py`만 돈다.
+  - **적응형 공격 보류**: `strategy_search`/`pair`/`tap`/`nanogcg`(= `main_search.py`, `--attacker_llm` 필요)는 기본 범위에서 뺐다. 정적 평가 결과를 본 뒤 도입을 결정한다. `run_piarena.sh`는 이 이름들을 받으면 거부한다.
+  - 기본 공격은 정적 `combined`(그 외 `none/direct/ignore/completion/character` 선택), 방어는 `none`.
+- **데이터셋**: 논문 Table 8의 비-에이전트 13종(단문 QA/추출/요약/RAG 7종 + LongBench 롱컨텍스트 6종, 총 1,700 샘플). 저장소 `datasets/*.json`에 포함돼 **HuggingFace 다운로드 없이** 로컬 경로로 로드된다(`main.py`가 로컬 JSON을 먼저 시도). knowledge_corruption RAG 3종은 opt-in. 각 샘플 필드: `target_inst, context, injected_task, target_task_answer, injected_task_answer, category`.
+- **Ollama 연동**: `patches/piarena-ollama.patch`로 (a) `OpenAIModel`에 `base_url`/명시 `temperature`/`reasoning_effort`/`<think>` 제거를 추가해 원격 Ollama를 OpenAI 호환 백엔드(`backend_llm=openai/ollama`)로 쓰고, (b) `main.py`의 GPU 강제(`assert cuda>0`)를 `PIARENA_ALLOW_NO_GPU=1`일 때 건너뛰며, (c) 심판(`llm_judge`) 기본 모델을 `PIARENA_JUDGE_MODEL`로 바꿔(기본 `openai/ollama`) 같은 엔드포인트로 돌리고, (d) 방어 레지스트리를 lazy-import로 바꿔 `--defense none`이 vllm/fastchat/peft/spacy 없이 import되게 했다.
+- **설치**: `scripts/setup_piarena.sh`가 핀 커밋(PIArena `8bd7a89`)으로 받아 패치 적용 후 `.venv-piarena`에 설치한다. 기본은 원격+정적+방어없음에 필요한 가벼운 의존성만(torch/transformers/openai/google-genai/anthropic/datasets 등). 로컬 HF 모델·방어까지 쓰려면 `PIARENA_FULL_INSTALL=1`로 `requirements.txt` 전체(vllm 등 GPU 의존성)를 설치한다.
+- **실행/평가**: `scripts/run_piarena.sh`가 데이터셋마다 `main.py`를 돌린다. utility는 데이터셋별 지표(LLM-as-Judge / F1 / ROUGE-L / Retrieval / Code Similarity), ASR은 LLM-as-Judge(롱컨텍스트 포함) 또는 knowledge_corruption의 substring. 결과는 `third_party/PIArena/results/evaluation_results/<NAME>/`.
+- **적응형 공격 (후속 결정)**: 정적 결과에서 ASR 상한과 데이터셋별 취약 지점을 확인한 뒤, 필요하면 `main_search.py` 기반으로 `--attacker_llm`을 Ollama로 지정하는 별도 트랙(패치 확장)을 추가한다. PIArena 적응형 공격의 "적응"은 방어 피드백에 대한 것이라, 방어를 켜는 실험과 함께 설계해야 의미가 있다.
+
 ---
 
 ## 8. 진행 상태
@@ -233,3 +248,5 @@ ATTACK=tool_knowledge MAX_WORKERS=4 scripts/run_attack.sh # E3
 - [x] Phase 5a AgentDyn / AutoDojo 통합 (setup 스크립트, 패치, 실행 스크립트, 모의 서버 검증)
 - [ ] Phase 5b 사내망에서 AgentDyn 3 suite, AutoDojo 직접 최적화 실행
 - [ ] Phase 5c `scripts/run_inspect.sh`로 AgentDojo-Inspect 확장
+- [x] Phase 5d PIArena 비-에이전트 정적 평가 통합 (setup/run 스크립트, `piarena-ollama.patch`, 모의 서버 검증). AgentDojo/AgentDyn·적응형 공격은 의도적 제외
+- [ ] Phase 5e 사내망에서 PIArena 13개 데이터셋 정적 평가 실행 → 결과 확인 후 적응형 공격 도입 여부 결정
