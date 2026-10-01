@@ -20,6 +20,8 @@ Ollama 서버: `http://10.251.36.222:9090`
 | AgentDojo (원본, PyPI `agentdojo` 0.1.35) | 4개 suite(workspace, slack, travel, banking), 97 user task, 27 injection task, 629 공격 케이스 | 1차 대상 |
 | AgentDyn (SaFo-Lab/AgentDyn, arXiv 2602.03117) | AgentDojo 포크. 개방형 suite 3개(shopping, github, dailylife) 60 user task, 560 케이스 추가 | 2차 대상, 구현됨 (`BENCH=agentdyn`) |
 | AutoDojo (xhOwenMa/AutoDojo, arXiv 2606.15057) | AgentDojo 포크. 공격자 LLM이 방어를 상대로 인젝션을 반복 최적화하는 적응형 공격 + 논문 캐시 | 2차 대상, 구현됨 (`BENCH=autodojo`) |
+| AgentVigil (arXiv 2505.05849, EMNLP 2025) | 인젝션 템플릿을 MCTS로 탐색하는 블랙박스 퍼저. 포크 아님, 러너 내장 `--attack agentvigil` | 구현됨 (공식 코드 없어 재구현) |
+| IterInject (arXiv 2605.24659) | 케이스별 피드백 기반 반복 최적화(Succ/Part/Det/Ign 진단). 포크 아님, 러너 내장 `--attack iterinject` | 구현됨 (공식 코드 없어 재구현) |
 | AgentDojo-Inspect (UK AISI 포크) | Inspect 프레임워크 이식판, 태스크 버그 수정 + 인젝션 태스크 추가 | `inspect_evals`의 `agentdojo` 태스크 |
 | InjecAgent / ASB(Agent Security Bench) / BIPIA | 동일 주제(간접 프롬프트 인젝션)의 유사 벤치마크 | 필요 시 확장 |
 
@@ -215,6 +217,17 @@ ATTACK=tool_knowledge MAX_WORKERS=4 scripts/run_attack.sh # E3
 - 검증: 모의 Ollama 서버로 AgentDyn 3 suite 실행, AutoDojo 캐시 공격·방어 실행, 최적화 1회 반복(타깃 160회 tool-calling 요청 + 최적화 LLM 8회 텍스트 요청, 모두 `reasoning_effort=none`/명시 temperature) → 캐시 생성 → 벤치마크까지 확인.
 - 실행 비용 주의: 2단계는 (injection task × vector × iteration × screening user task) 만큼 타깃 호출이 발생한다. 27B 모델 단일 GPU에서는 `--max-injection-tasks`, `ITERATIONS`, `N_VARIANTS`를 줄여 먼저 시간을 잰다.
 
+### 7.1b AgentVigil / IterInject (구현됨, 포크 아님)
+
+AutoDojo 외의 적응형 벤치마크 방식 두 가지를 러너에 직접 넣었다. 둘 다 공식 코드가 없어 논문 설명대로 `agentdojo_ollama/adaptive/` 에 재구현했고, 포크가 아니라 stock AgentDojo 공유 API(`get_suite`, `get_injection_candidates`, `run_task_with_pipeline`, `register_attack`)만 쓰므로 **세 venv 어디서나** 동작한다. AutoDojo 와 같은 2단계(최적화 → 캐시 → `--attack` 재생) 구조다.
+
+- **AgentVigil** (arXiv 2505.05849): 인젝션 **템플릿**을 MCTS 로 탐색하는 블랙박스 퍼저. 시드 템플릿 6종에서 출발해 보조 LLM 으로 shorten/expand/rephrase/crossover/generate_similar 변이를 만들고, 샘플 케이스의 성공률(ASR)+커버리지 보너스로 UCB 선택한다. 최종적으로 케이스별 최고 성공 템플릿을 캐시에 기록한다. `scripts/run_agentvigil.sh`.
+- **IterInject** (arXiv 2605.24659): **(user_task, injection_task) 케이스마다** 인젝션을 개별 최적화한다. 규칙 기반 진단기가 실행 결과를 Succ/Part/Det/Ign + 자연어 근거로 분류하고(목표 툴 호출 매칭 + 거부 키워드), 최적화 LLM 이 현재 문구·진단·이력·타 케이스 성공 문구를 보고 개선 문구를 낸다. Succ 또는 patience 소진까지 반복(논문 N=7, P=3). `scripts/run_iterinject.sh`.
+- 공통: 타깃·공격자 LLM 모두 Ollama. 캐시는 `runs/<bench>/variants/<suite>/<attack>.json`, 재생은 `--attack agentvigil|iterinject --adaptive-cache`. 측정 목적은 AutoDojo 와 동일(방어 없는 우리 모델에 맞춘 적응형 공격의 ASR 상한). 방어 평가나 전이 평가는 범위 밖.
+- 안전 처리: LLM 이 만든 문구가 큰따옴표 YAML 스칼라를 깨지 않도록 `sanitize_injection` 으로 따옴표·백슬래시 이스케이프 + 0열 `---`/`...` 문서 마커 회피를 재생·최적화 양쪽에서 적용한다.
+- 검증: 모의 Ollama 서버(첫 턴 tool call → 텍스트)로 banking suite 최적화(AgentVigil 2 반복×2 변이, IterInject 3 반복) → 캐시 생성 → `--attack` 재생 벤치마크 → `summarize` 집계까지 확인. ASR 은 모의 타깃이 실제 목표를 수행하지 않으므로 0 (배관 검증용).
+- 실행 비용: AgentVigil 타깃 호출 ≈ (시드 6 + 반복×변이)×샘플 케이스, IterInject ≈ Σ 케이스(≤ N). `SAMPLE_FRAC`, `ITERATIONS`, `--max-injection-tasks` 로 줄여 먼저 시간을 잰다.
+
 ### 7.2 AgentDojo-Inspect
 
 1. **AgentDojo-Inspect**: `pip install -e ".[inspect]"` 후 `scripts/run_inspect.sh` 실행 (`inspect eval inspect_evals/agentdojo --model openai-api/ollama/<tag>`). Inspect의 `openai-api` 프로바이더는 `OPENAI_BASE_URL`로 임의의 OpenAI 호환 서버를 가리킬 수 있어 같은 Ollama 서버를 재사용한다. `workspace_plus`의 sandbox 태스크는 Docker가 필요하므로 기본은 `with_sandbox_tasks=no`.
@@ -231,5 +244,6 @@ ATTACK=tool_knowledge MAX_WORKERS=4 scripts/run_attack.sh # E3
 - [ ] Phase 3 E1 → E2 → E3 순으로 실행, 각 단계 결과를 `results/`에 커밋 (E4 방어는 범위 밖)
 - [ ] Phase 4 `scripts/summarize.sh`로 비교표, 공식 리더보드와 대조
 - [x] Phase 5a AgentDyn / AutoDojo 통합 (setup 스크립트, 패치, 실행 스크립트, 모의 서버 검증)
-- [ ] Phase 5b 사내망에서 AgentDyn 3 suite, AutoDojo 직접 최적화 실행
+- [x] Phase 5a' AgentVigil / IterInject 통합 (러너 내장 적응형 공격, 실행 스크립트, 모의 서버 검증)
+- [ ] Phase 5b 사내망에서 AgentDyn 3 suite, AutoDojo 직접 최적화, AgentVigil/IterInject 실행
 - [ ] Phase 5c `scripts/run_inspect.sh`로 AgentDojo-Inspect 확장

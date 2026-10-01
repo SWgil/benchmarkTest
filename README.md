@@ -12,6 +12,15 @@
 
 세 벤치마크는 모두 `agentdojo`라는 같은 패키지 이름의 포크라서 **venv를 따로** 씁니다(`.venv-agentdojo`, `.venv-agentdyn`, `.venv-autodojo`). `scripts/common.sh`가 `BENCH` 값에 따라 venv, 기본 suite, 로그 디렉터리(`runs/<BENCH>/`)를 고릅니다.
 
+또한 포크 없이 **우리 러너 안에서 돌아가는 적응형 공격 두 가지**를 추가로 제공합니다(별도 설치·venv 불필요, 세 BENCH 어디서나 동작). AutoDojo 처럼 캐시를 만든 뒤 `--attack` 으로 재생하는 구조입니다.
+
+| 공격 | 방식 | 논문 |
+|---|---|---|
+| `agentvigil` | 인젝션 **템플릿**을 MCTS 로 탐색하는 블랙박스 퍼저. 템플릿 하나를 여러 케이스에 공유하며 성공률+커버리지로 점수 | [AgentVigil](https://arxiv.org/abs/2505.05849) (EMNLP 2025) |
+| `iterinject` | **케이스마다** 인젝션을 피드백 기반으로 반복 최적화. 결과를 Succ/Part/Det/Ign 로 진단해 최적화 LLM 에 넘김 | [IterInject](https://arxiv.org/abs/2605.24659) |
+
+두 논문 모두 공식 코드가 없어 `agentdojo_ollama/adaptive/` 에 논문 설명대로 재구현했습니다. 타깃·공격자 LLM 모두 Ollama 모델이며, 측정 목적은 AutoDojo 와 같습니다(방어 없는 우리 모델에 맞춘 적응형 공격이 정적 공격 대비 ASR 을 얼마나 올리는지 = LLM 자체 저항성의 상한).
+
 ## 왜 자체 러너인가
 
 - PyPI `agentdojo==0.1.35`에는 OpenAI 호환 서버용 프로바이더가 없습니다 (main 브랜치에만 있음).
@@ -94,6 +103,39 @@ AutoDojo 논문의 주제는 "방어를 상대로 한 적응형 공격"이라 �
 - DRIFT 방어 모델도 같은 환경변수로 원격 지정 가능
 
 참고로 AutoDojo의 필터 방어(`promptguard`, `piguard`, `protectai`, `datafilter`)는 GPU와 Hugging Face 토큰이 필요하고, `drift`/`progent`/`camel`은 추가 의존성이 필요합니다.
+
+## AgentVigil / IterInject 사용법
+
+포크가 아니라 우리 러너(`agentdojo_ollama/adaptive/`)에 들어 있으므로 **아무 venv에서나** 돕니다. 두 단계로 실행합니다: 최적화기가 캐시를 만들고, 러너가 `--attack` 으로 그 캐시를 재생합니다.
+
+```bash
+# AgentVigil (MCTS 퍼징). 기본 suite = BENCH 기본값.
+SUITES=banking ITERATIONS=10 MUT=3 scripts/run_agentvigil.sh
+# IterInject (케이스별 반복 최적화). 케이스가 많으니 작게 시작하세요.
+SUITES=banking ITERATIONS=7 PATIENCE=3 SAMPLE_FRAC=0.25 scripts/run_iterinject.sh
+BENCH=agentdojo scripts/summarize.sh     # agentvigil/iterinject 행이 함께 집계됨
+```
+
+직접 실행할 때:
+
+```bash
+# 1단계: 최적화 → 캐시 (타깃·공격자 LLM 모두 Ollama)
+agentdojo-agentvigil -s banking --iterations 10 --mutations-per-iter 3 --sample-frac 0.25 \
+  --out runs/agentdojo/variants/banking/agentvigil.json
+# 2단계: 캐시 재생 벤치마크
+agentdojo-ollama -s banking --attack agentvigil \
+  --adaptive-cache runs/agentdojo/variants/banking/agentvigil.json
+agentdojo-agentvigil --help   # / agentdojo-iterinject --help
+```
+
+주요 변수:
+
+- `SAMPLE_FRAC`(기본 0.25): 최적화에 쓰는 (user×injection) 케이스 샘플 비율. 논문의 1/4 샘플. AgentVigil 은 샘플에서 찾은 최고 템플릿을 나머지 케이스에도 적용해 캐시를 채우고, IterInject 는 샘플 케이스만 캐시에 넣고 나머지는 재생 때 기본 템플릿으로 폴백합니다.
+- `ITERATIONS` / `MUT`(AgentVigil): MCTS 반복 수와 반복당 변이 수. `PATIENCE`(IterInject): 케이스당 무개선 허용 횟수.
+- `HELPER_MODEL`, `HELPER_REASONING_EFFORT`, `HELPER_BASE_URL`: 공격자(변이·최적화) LLM. 기본은 타깃과 같은 모델, thinking 은 모델 기본값(켜짐). `HELPER_REASONING_EFFORT=none` 으로 끌 수 있습니다.
+- 비용: AgentVigil 타깃 호출 ≈ (초기 시드 6 + 반복×변이)×샘플 케이스. IterInject ≈ Σ 케이스(≤ ITERATIONS). 27B 모델에서는 `--max-injection-tasks`, `SAMPLE_FRAC`, `ITERATIONS` 를 줄여 먼저 시간을 재세요.
+
+캐시 형식(`cases[user_task][injection_task] = {injection, score, ...}`)은 `agentdojo_ollama/adaptive/replay_attack.py` 상단에 적어 두었습니다. 인젝션 문자열은 재생·최적화 시 `sanitize_injection` 으로 다듬어 environment YAML(큰따옴표 스칼라)에 안전하게 들어갑니다(따옴표·백슬래시 이스케이프, 0열 `---`/`...` 회피).
 
 ## 겹치는 suite 처리
 

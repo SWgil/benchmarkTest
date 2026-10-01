@@ -28,6 +28,11 @@ from agentdojo.task_suite.load_suites import get_suite, get_suites
 from agentdojo_ollama.compat import detect_bench
 from agentdojo_ollama.llm import OllamaLLM
 
+# 적응형 공격(agentvigil, iterinject)을 ATTACKS 레지스트리에 등록한다.
+# import 하는 것만으로 @register_attack 가 실행되어 --attack 선택지에 추가된다.
+# (AutoDojo 포크는 autodojo 공격을 패키지 안에 자체 등록하므로 중복 등록을 피해 건너뛴다.)
+import agentdojo_ollama.adaptive.replay_attack  # noqa: F401,E402
+
 NO_THINK_SUFFIX = " /no_think"
 BENCH = detect_bench()
 
@@ -150,6 +155,8 @@ def show_results(suite_name: str, results: SuiteResults, with_attack: bool) -> N
 @click.option("--timeout", type=float, default=600.0, show_default=True, help="요청당 타임아웃(초). 27B 모델은 넉넉히.")
 @click.option("--autodojo-cache", type=click.Path(exists=True, dir_okay=False), default=None, help="[AutoDojo] --attack autodojo 에 쓸 injections.json (AUTODOJO_CACHE).")
 @click.option("--autodojo-variant", type=int, default=None, help="[AutoDojo] 캐시의 변형 인덱스 (AUTODOJO_VARIANT, 기본 0).")
+@click.option("--adaptive-cache", type=click.Path(exists=True, dir_okay=False), default=None, help="[AgentVigil/IterInject] --attack agentvigil|iterinject 에 쓸 캐시 (ADAPTIVE_CACHE).")
+@click.option("--adaptive-variant", type=int, default=None, help="[AgentVigil/IterInject] 케이스 엔트리가 리스트일 때 변형 인덱스 (ADAPTIVE_VARIANT, 기본 0).")
 def main(
     base_url: str,
     api_key: str,
@@ -176,6 +183,8 @@ def main(
     timeout: float,
     autodojo_cache: str | None,
     autodojo_variant: int | None,
+    adaptive_cache: str | None,
+    adaptive_variant: int | None,
 ) -> None:
     for module in modules_to_load:
         importlib.import_module(module)
@@ -186,6 +195,13 @@ def main(
         os.environ["AUTODOJO_VARIANT"] = str(autodojo_variant)
     if attack == "autodojo" and not os.environ.get("AUTODOJO_CACHE"):
         raise click.UsageError("--attack autodojo 에는 --autodojo-cache (또는 AUTODOJO_CACHE) 가 필요합니다.")
+
+    if adaptive_cache:
+        os.environ["ADAPTIVE_CACHE"] = str(Path(adaptive_cache).resolve())
+    if adaptive_variant is not None:
+        os.environ["ADAPTIVE_VARIANT"] = str(adaptive_variant)
+    if attack in ("agentvigil", "iterinject") and not os.environ.get("ADAPTIVE_CACHE"):
+        raise click.UsageError(f"--attack {attack} 에는 --adaptive-cache (또는 ADAPTIVE_CACHE) 가 필요합니다.")
 
     if not suites:
         suites = tuple(get_suites(benchmark_version).keys())
